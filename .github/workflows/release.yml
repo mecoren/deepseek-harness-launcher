@@ -151,9 +151,11 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # macOS signing + notarization. When these are empty the .app/.dmg is
-          # produced unsigned and Gatekeeper will block it on other machines.
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          # macOS signing + notarization. When APPLE_SIGNING_IDENTITY is empty we
+          # fall back to "-" (ad-hoc signing via `codesign --sign -`) so the build
+          # does not fail with "no identity found". With a real identity set in
+          # secrets, the app is properly signed + notarized.
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY || '-' }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
