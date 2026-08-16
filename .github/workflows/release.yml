@@ -171,10 +171,10 @@ jobs:
           (cd runtime-host && npm install --no-audit --no-fund)
 
           # Gate: the offline runtime must actually boot `dsh web` and print its
-      # readiness line before we ship it. Catches node-version / dependency
-      # mismatches that compile and bundle fine but leave the installed app
-      # stuck on the loading screen forever (e.g. a bundled Node too old for
-      # the CLI's node:zlib zstd API).
+          # readiness line before we ship it. Catches node-version / dependency
+          # mismatches that compile and bundle fine but leave the installed app
+          # stuck on the loading screen forever (e.g. a bundled Node too old for
+          # the CLI's node:zlib zstd API).
       - name: Smoke test offline runtime-host
         shell: pwsh
         run: |
@@ -184,9 +184,18 @@ jobs:
           $err = Join-Path $env:RUNNER_TEMP "dsh-smoke-err.log"
           $bin = Join-Path (Resolve-Path "runtime-host").Path "${{ matrix.node-bin }}"
           $cli = "node_modules/@deepseek-ai/dsh/lib/bin.js"
-          $p = Start-Process -FilePath $bin -ArgumentList @($cli, "web", "--host", "127.0.0.1", "--port", "0") `
-            -WorkingDirectory (Resolve-Path "runtime-host").Path `
-            -RedirectStandardOutput $out -RedirectStandardError $err -PassThru -WindowStyle Hidden
+          $startArgs = @{
+            FilePath               = $bin
+            ArgumentList           = @($cli, "web", "--host", "127.0.0.1", "--port", "0")
+            WorkingDirectory       = (Resolve-Path "runtime-host").Path
+            RedirectStandardOutput = $out
+            RedirectStandardError  = $err
+            PassThru               = $true
+          }
+          # `-WindowStyle` is Windows-only; PowerShell on macOS/Linux rejects
+          # the parameter outright, so pass it only on Windows runners.
+          if ($IsWindows) { $startArgs.WindowStyle = "Hidden" }
+          $p = Start-Process @startArgs
           $deadline = (Get-Date).AddSeconds(150)
           $ok = $false
           while ((Get-Date) -lt $deadline) {
