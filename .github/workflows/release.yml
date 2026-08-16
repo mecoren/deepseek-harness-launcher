@@ -128,7 +128,11 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          $nodeVer = "v22.13.0"
+          # Must be >= v22.16.0: @deepseek-ai/dsh's plugins import
+          # `node:zlib`'s zstd API (createZstdDecompress etc.), which only
+          # exists from v22.16.0 on. v22.13.0 boots, then dies with a
+          # SyntaxError, leaving the app stuck on the loading screen.
+          $nodeVer = "v22.22.2"
           $nodeUrl = "https://nodejs.org/dist/$nodeVer/node-$nodeVer-${{ matrix.node-dist }}.zip"
           Invoke-WebRequest -Uri $nodeUrl -OutFile "$env:RUNNER_TEMP/node.zip"
           Expand-Archive -Path "$env:RUNNER_TEMP/node.zip" -DestinationPath "$env:RUNNER_TEMP/node_tmp"
@@ -142,7 +146,8 @@ jobs:
         if: startsWith(matrix.platform, 'ubuntu')
         run: |
           set -euo pipefail
-          NODE_VER=v22.13.0
+          # Must be >= v22.16.0 for node:zlib's zstd API (see Windows step).
+          NODE_VER=v22.22.2
           DIST="node-${NODE_VER}-${{ matrix.node-dist }}"
           curl -fsSL "https://nodejs.org/dist/${NODE_VER}/${DIST}.tar.xz" -o "$RUNNER_TEMP/node.tar.xz"
           mkdir -p "$RUNNER_TEMP/node_tmp"
@@ -155,7 +160,8 @@ jobs:
         if: startsWith(matrix.platform, 'macos')
         run: |
           set -euo pipefail
-          NODE_VER=v22.13.0
+          # Must be >= v22.16.0 for node:zlib's zstd API (see Windows step).
+          NODE_VER=v22.22.2
           DIST="node-${NODE_VER}-${{ matrix.node-dist }}"
           curl -fsSL "https://nodejs.org/dist/${NODE_VER}/${DIST}.tar.gz" -o "$RUNNER_TEMP/node.tar.gz"
           mkdir -p "$RUNNER_TEMP/node_tmp"
@@ -164,6 +170,44 @@ jobs:
           chmod +x "runtime-host/${{ matrix.node-bin }}"
           (cd runtime-host && npm install --no-audit --no-fund)
 
+          # Gate: the offline runtime must actually boot `dsh web` and print its
+      # readiness line before we ship it. Catches node-version / dependency
+      # mismatches that compile and bundle fine but leave the installed app
+      # stuck on the loading screen forever (e.g. a bundled Node too old for
+      # the CLI's node:zlib zstd API).
+      - name: Smoke test offline runtime-host
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $env:DSH_HOME = Join-Path $env:RUNNER_TEMP "dsh-smoke-${{ matrix.target }}"
+          $out = Join-Path $env:RUNNER_TEMP "dsh-smoke-out.log"
+          $err = Join-Path $env:RUNNER_TEMP "dsh-smoke-err.log"
+          $bin = Join-Path (Resolve-Path "runtime-host").Path "${{ matrix.node-bin }}"
+          $cli = "node_modules/@deepseek-ai/dsh/lib/bin.js"
+          $p = Start-Process -FilePath $bin -ArgumentList @($cli, "web", "--host", "127.0.0.1", "--port", "0") `
+            -WorkingDirectory (Resolve-Path "runtime-host").Path `
+            -RedirectStandardOutput $out -RedirectStandardError $err -PassThru -WindowStyle Hidden
+          $deadline = (Get-Date).AddSeconds(150)
+          $ok = $false
+          while ((Get-Date) -lt $deadline) {
+            if (Test-Path $out) {
+              $text = Get-Content $out -Raw -ErrorAction SilentlyContinue
+              if ($text -match 'dsh web: http://127\.0\.0\.1:\d+') { $ok = $true; break }
+            }
+            if ($p.HasExited) { break }
+            Start-Sleep -Seconds 2
+          }
+          if (-not $ok) {
+            if (Test-Path $err) { Get-Content $err -Tail 60 }
+            if (-not $p.HasExited) {
+              if ($IsWindows) { taskkill /PID $p.Id /T /F 2>$null | Out-Null }
+              else { kill -9 $p.Id 2>$null }
+            }
+            throw "dsh web smoke test failed: no readiness line within 150s"
+          }
+          if ($IsWindows) { taskkill /PID $p.Id /T /F 2>$null | Out-Null }
+          else { kill -9 $p.Id 2>$null }
+          "dsh web smoke test passed"
       # Detect whether all four Apple signing/notarization secrets are present.
       #
       # IMPORTANT: tauri-cli treats a *set-but-empty* APPLE_* env var exactly

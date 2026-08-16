@@ -563,6 +563,16 @@ fn get_whale_icon_url() -> Result<String, String> {
 
 fn main() {
     tauri::Builder::default()
+        // Single instance: launching the exe again must surface the existing
+        // window (which may be hidden in the tray), not open a second app.
+        // The callback runs in the *first* instance when a second one starts.
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            if let Some(w) = app.get_webview_window("main") {
+                let _ = w.unminimize();
+                let _ = w.show();
+                let _ = w.set_focus();
+            }
+        }))
         .setup(|app| {
             // --- system tray ---
             // Use a DPI-matched whale PNG instead of the full-size app icon:
@@ -599,7 +609,24 @@ fn main() {
                 .icon(tray_icon)
                 .tooltip("DeepSeek Harness")
                 .menu(&menu)
-                .show_menu_on_left_click(true)
+                // Left click pops the window straight up (no menu on left
+                // click); the menu stays on right click.
+                .show_menu_on_left_click(false)
+                .on_tray_icon_event(|tray, event| {
+                    if let tauri::tray::TrayIconEvent::Click {
+                        button: tauri::tray::MouseButton::Left,
+                        button_state: tauri::tray::MouseButtonState::Up,
+                        ..
+                    } = event
+                    {
+                        let app = tray.app_handle();
+                        if let Some(w) = app.get_webview_window("main") {
+                            let _ = w.unminimize();
+                            let _ = w.show();
+                            let _ = w.set_focus();
+                        }
+                    }
+                })
                 .on_menu_event(|app, event| match event.id.as_ref() {
                     "quit" => app.exit(0),
                     "show" => {

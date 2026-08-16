@@ -343,14 +343,20 @@ fn spawn_dsh_web(resource_dir: Option<PathBuf>) -> Option<Child> {
         );
         if node.exists() && cli.exists() {
             eprintln!("[dsh] using bundled offline CLI (base={})", base.display());
-            return Command::new(&node)
-                .arg(&cli)
+            let mut cmd = Command::new(&node);
+            cmd.arg(&cli)
                 .args(["web", "--host", "127.0.0.1", "--port", "0"])
                 .stdin(Stdio::null())
                 .stdout(Stdio::piped())
-                .stderr(Stdio::inherit())
-                .spawn()
-                .ok();
+                // stderr -> NUL: the launcher is a GUI app without a console;
+                // `inherit` would hand node a NULL handle (writes fail) and,
+                // without CREATE_NO_WINDOW, Windows pops a new console window
+                // for the console-subsystem node.exe — closing it kills dsh web
+                // and leaves the app stuck on the loading screen.
+                .stderr(Stdio::null());
+            #[cfg(windows)]
+            cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+            return cmd.spawn().ok();
         }
     }
 

@@ -13,7 +13,7 @@
 | **Rust 工具链** | 稳定版（建议 ≥ 1.77） | 编译 Tauri 后端 |
 | **MSVC 目标** | `x86_64-pc-windows-msvc` | ⚠️ 必须用 MSVC，不能用 GNU（见排错） |
 | **Visual Studio Build Tools 2022** | “使用 C++ 的桌面开发”工作负载（含 MSVC + Windows 10/11 SDK） | Tauri 链接 COFF 格式的 `resource.lib` 需要 MSVC `link.exe` |
-| **Node.js + npm** | ≥ 18（仅用于组装离线 CLI 包 / `npx` 兜底） | 打包 `runtime-host`；终端用户无需安装 |
+| **Node.js + npm** | ≥ 22.16.0（仅用于组装离线 CLI 包 / `npx` 兜底） | 打包 `runtime-host`；终端用户无需安装 |
 | **WebView2 运行时** | Win10/11 已预装 | Tauri 渲染前端（缺则去微软官网装） |
 | **@tauri-apps/cli** | `2.11.4`（devDependency） | 打包安装程序 |
 
@@ -84,8 +84,12 @@ src-tauri/target/x86_64-pc-windows-msvc/release/bundle/
 1. 启动后外壳先显示加载页（`dist/index.html`，中文 spinner 文案）。
 2. 后台线程以 `--host 127.0.0.1 --port 0` 拉起 `dsh web`（系统随机分配 loopback 端口），
    读取就绪行 `dsh web: http://127.0.0.1:<port>` 后把主窗口导航过去。
+   （`node.exe` 以 `CREATE_NO_WINDOW` 启动，**不会弹出任何终端/控制台窗口**；
+   即使系统默认终端是 Windows Terminal 也不会弹窗。）
 3. 窗口关闭 → **仅隐藏**，进程继续驻留系统托盘（黑鲸图标）。
-4. 托盘菜单：**显示主窗口** / **退出**；只有“退出”才真正结束进程，
+4. **单实例**：重复双击 exe（或再次启动）不会新开进程——已运行实例会
+   直接唤起/聚焦主窗口（`tauri-plugin-single-instance`）。
+5. 托盘菜单：**显示主窗口** / **退出**；只有“退出”才真正结束进程，
    并在退出时 `taskkill /T /F` 杀掉 `dsh web` 进程树。
 
 ---
@@ -114,6 +118,12 @@ copy <node-install>\node.exe node.exe
 # 安装官方 CLI（仅首次，需要联网）
 npm install @deepseek-ai/dsh --no-audit --no-fund
 ```
+
+> ⚠️ **Node 版本必须 ≥ 22.16.0**（CI 与本地一致）。`@deepseek-ai/dsh` 的插件
+> 会导入 `node:zlib` 的 zstd API（`createZstdDecompress` 等），该 API 自
+> **Node v22.16.0** 起才存在。若随包发布更老的 Node（如 v22.13.0），`dsh web`
+> 会启动即崩溃，桌面端会一直停留在加载页且无任何提示。
+> 建议用当前 v22 LTS 最新版（如 v22.22.2）。
 
 > `tauri.conf.json` 中 `bundle.resources.runtime-host` 会把它打进应用资源目录；
 > 运行时 `dsh.rs` 通过 `app.path().resource_dir()` 定位。
