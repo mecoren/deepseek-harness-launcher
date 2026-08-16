@@ -54,30 +54,51 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # npm-os / npm-cpu pin `npm install`'s optional-native-dependency
+          # selection to the BUNDLED node binary's platform/arch instead of the
+          # runner's. Without this, native binaries such as @koromix/koffi-*,
+          # @img/sharp-*, @vscode/ripgrep-* and node-addon-require-builtin-*
+          # get installed for the runner's arch, which is wrong on:
+          #   - macos-latest (arm64 hardware) packing the darwin-x64 node
+          #   - windows-2022 (x64 hardware) packing the win-arm64 node
+          # A mismatched bundle then fails `dsh web` boot with
+          # "Cannot find the native Koffi module; did you bundle it correctly?"
           - platform: windows-2022
             target: x86_64-pc-windows-msvc
             node-dist: win-x64
             node-bin: node.exe
+            npm-os: win32
+            npm-cpu: x64
           - platform: windows-2022
             target: aarch64-pc-windows-msvc
             node-dist: win-arm64
             node-bin: node.exe
+            npm-os: win32
+            npm-cpu: arm64
           - platform: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
             node-dist: linux-x64
             node-bin: node
+            npm-os: linux
+            npm-cpu: x64
           - platform: ubuntu-22.04-arm
             target: aarch64-unknown-linux-gnu
             node-dist: linux-arm64
             node-bin: node
+            npm-os: linux
+            npm-cpu: arm64
           - platform: macos-latest
             target: x86_64-apple-darwin
             node-dist: darwin-x64
             node-bin: node
+            npm-os: darwin
+            npm-cpu: x64
           - platform: macos-latest
             target: aarch64-apple-darwin
             node-dist: darwin-arm64
             node-bin: node
+            npm-os: darwin
+            npm-cpu: arm64
     steps:
       - uses: actions/checkout@v4
 
@@ -139,7 +160,9 @@ jobs:
           Copy-Item -Path "$env:RUNNER_TEMP/node_tmp/node-$nodeVer-${{ matrix.node-dist }}/node.exe" `
             -Destination "runtime-host/${{ matrix.node-bin }}" -Force
           Push-Location runtime-host
-          npm install --no-audit --no-fund
+          # --os/--cpu pin optional native deps (koffi/sharp/ripgrep/...) to the
+          # arch of the bundled node binary, not the runner's (see matrix note).
+          npm install --no-audit --no-fund --os=${{ matrix.npm-os }} --cpu=${{ matrix.npm-cpu }}
           Pop-Location
 
       - name: Pack offline runtime-host (Linux)
@@ -154,7 +177,8 @@ jobs:
           tar -xJf "$RUNNER_TEMP/node.tar.xz" -C "$RUNNER_TEMP/node_tmp"
           cp "$RUNNER_TEMP/node_tmp/${DIST}/bin/node" "runtime-host/${{ matrix.node-bin }}"
           chmod +x "runtime-host/${{ matrix.node-bin }}"
-          (cd runtime-host && npm install --no-audit --no-fund)
+          # --os/--cpu: pin optional native deps to the bundled node's arch.
+          (cd runtime-host && npm install --no-audit --no-fund --os=${{ matrix.npm-os }} --cpu=${{ matrix.npm-cpu }})
 
       - name: Pack offline runtime-host (macOS)
         if: startsWith(matrix.platform, 'macos')
@@ -168,7 +192,8 @@ jobs:
           tar -xzf "$RUNNER_TEMP/node.tar.gz" -C "$RUNNER_TEMP/node_tmp"
           cp "$RUNNER_TEMP/node_tmp/${DIST}/bin/node" "runtime-host/${{ matrix.node-bin }}"
           chmod +x "runtime-host/${{ matrix.node-bin }}"
-          (cd runtime-host && npm install --no-audit --no-fund)
+          # --os/--cpu: pin optional native deps to the bundled node's arch.
+          (cd runtime-host && npm install --no-audit --no-fund --os=${{ matrix.npm-os }} --cpu=${{ matrix.npm-cpu }})
 
           # Gate: the offline runtime must actually boot `dsh web` and print its
           # readiness line before we ship it. Catches node-version / dependency
@@ -176,6 +201,11 @@ jobs:
           # stuck on the loading screen forever (e.g. a bundled Node too old for
           # the CLI's node:zlib zstd API).
       - name: Smoke test offline runtime-host
+        # The aarch64-pc-windows-msvc job bundles the win-arm64 node.exe, which
+        # cannot execute on the x64 windows-2022 runner (x64 Windows has no
+        # ARM64 emulation), so the boot gate cannot run there — that job runs
+        # the static packaging check in the next step instead.
+        if: matrix.target != 'aarch64-pc-windows-msvc'
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
@@ -217,6 +247,31 @@ jobs:
           if ($IsWindows) { taskkill /PID $p.Id /T /F 2>$null | Out-Null }
           else { kill -9 $p.Id 2>$null }
           "dsh web smoke test passed"
+
+      # aarch64 Windows cannot run its own boot gate (win-arm64 node.exe is not
+      # executable on the x64 windows-2022 runner), so verify the bundle
+      # statically instead: the arch-matched native binaries that the pack step
+      # installed for the bundled arm64 node must all be present. Covers the
+      # same koffi/sharp/ripgrep/HMR-probe classes the boot gate catches on the
+      # other five matrix entries.
+      - name: Verify offline runtime-host packaging (aarch64 Windows)
+        if: matrix.target == 'aarch64-pc-windows-msvc'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $root = (Resolve-Path "runtime-host").Path
+          $need = @(
+            "node_modules/@koromix/koffi-win32-arm64",
+            "node_modules/@img/sharp-win32-arm64",
+            "node_modules/@vscode/ripgrep-win32-arm64",
+            "node_modules/node-addon-require-builtin-win32-arm64-msvc"
+          )
+          foreach ($rel in $need) {
+            if (-not (Test-Path (Join-Path $root $rel))) {
+              throw "missing $rel in offline runtime-host bundle"
+            }
+          }
+          "offline runtime-host packaging OK (aarch64 Windows)"
       # Detect whether all four Apple signing/notarization secrets are present.
       #
       # IMPORTANT: tauri-cli treats a *set-but-empty* APPLE_* env var exactly
