@@ -31,9 +31,14 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["msi", "nsis", "deb", "rpm", "dmg", "app"],
     "linux": {
-      "targets": ["deb", "rpm"]
+      "targets": ["deb", "rpm", "appimage"]
+    },
+    "windows": {
+      "targets": ["msi", "nsis"]
+    },
+    "macOS": {
+      "targets": ["dmg", "app"]
     },
     "icon": [
       "icons/32x32.png",
