@@ -54,11 +54,16 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # npm-os / npm-cpu pin `npm install`'s optional-native-dependency
-          # selection to the BUNDLED node binary's platform/arch instead of the
-          # runner's. Without this, native binaries such as @koromix/koffi-*,
-          # @img/sharp-*, @vscode/ripgrep-* and node-addon-require-builtin-*
-          # get installed for the runner's arch, which is wrong on:
+          # npm-os / npm-cpu drive a SECOND `npm install` pass (after a plain
+          # runner-arch install) that re-resolves optional-native-dependency
+          # packages such as @koromix/koffi-*, @img/sharp-*, @vscode/ripgrep-*
+          # and node-addon-require-builtin-* for the BUNDLED node binary's
+          # platform/arch instead of the runner's. A single pass pinned via
+          # --os/--cpu is NOT enough: koffi's install script (cnoke.cjs) picks
+          # its prebuilt binary by the RUNNING node's arch and then falls back
+          # to a cmake source build (which fails on cross-arch runners) when
+          # that runner-arch prebuild is missing — hence pass 1 must install
+          # for the runner's own arch. The mismatch matters on:
           #   - macos-latest (arm64 hardware) packing the darwin-x64 node
           #   - windows-2022 (x64 hardware) packing the win-arm64 node
           # A mismatched bundle then fails `dsh web` boot with
@@ -160,8 +165,16 @@ jobs:
           Copy-Item -Path "$env:RUNNER_TEMP/node_tmp/node-$nodeVer-${{ matrix.node-dist }}/node.exe" `
             -Destination "runtime-host/${{ matrix.node-bin }}" -Force
           Push-Location runtime-host
-          # --os/--cpu pin optional native deps (koffi/sharp/ripgrep/...) to the
-          # arch of the bundled node binary, not the runner's (see matrix note).
+          # Two-pass install (see matrix note for why):
+          # 1) Plain install for the RUNNER's arch first. koffi's install
+          #    script (cnoke.cjs) looks up its prebuilt binary by the running
+          #    node's arch and falls back to a cmake source build when that
+          #    prebuild is absent, which fails on cross-arch runners.
+          npm install --no-audit --no-fund
+          # 2) Then re-resolve the optional native deps (koffi/sharp/ripgrep/
+          #    ...) for the BUNDLED node's arch. Only leaf binary packages get
+          #    swapped, so no install scripts re-run and no source build is
+          #    triggered by the swap.
           npm install --no-audit --no-fund --os=${{ matrix.npm-os }} --cpu=${{ matrix.npm-cpu }}
           Pop-Location
 
@@ -177,7 +190,11 @@ jobs:
           tar -xJf "$RUNNER_TEMP/node.tar.xz" -C "$RUNNER_TEMP/node_tmp"
           cp "$RUNNER_TEMP/node_tmp/${DIST}/bin/node" "runtime-host/${{ matrix.node-bin }}"
           chmod +x "runtime-host/${{ matrix.node-bin }}"
-          # --os/--cpu: pin optional native deps to the bundled node's arch.
+          # Two-pass install: plain first so koffi's cnoke finds the runner-arch
+          # prebuilt binary (no cmake source-build fallback), then re-resolve
+          # the native platform packages for the bundled node's arch (leaf-only
+          # swap, no install scripts re-run).
+          (cd runtime-host && npm install --no-audit --no-fund)
           (cd runtime-host && npm install --no-audit --no-fund --os=${{ matrix.npm-os }} --cpu=${{ matrix.npm-cpu }})
 
       - name: Pack offline runtime-host (macOS)
@@ -192,7 +209,11 @@ jobs:
           tar -xzf "$RUNNER_TEMP/node.tar.gz" -C "$RUNNER_TEMP/node_tmp"
           cp "$RUNNER_TEMP/node_tmp/${DIST}/bin/node" "runtime-host/${{ matrix.node-bin }}"
           chmod +x "runtime-host/${{ matrix.node-bin }}"
-          # --os/--cpu: pin optional native deps to the bundled node's arch.
+          # Two-pass install: plain first so koffi's cnoke finds the runner-arch
+          # prebuilt binary (no cmake source-build fallback), then re-resolve
+          # the native platform packages for the bundled node's arch (leaf-only
+          # swap, no install scripts re-run).
+          (cd runtime-host && npm install --no-audit --no-fund)
           (cd runtime-host && npm install --no-audit --no-fund --os=${{ matrix.npm-os }} --cpu=${{ matrix.npm-cpu }})
 
           # Gate: the offline runtime must actually boot `dsh web` and print its
