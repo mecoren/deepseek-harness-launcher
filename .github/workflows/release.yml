@@ -23,6 +23,16 @@ name: Release
 #                         (or `xattr -rd com.apple.quarantine ...`).
 # No Tauri updater signing key is required — this app updates itself via the
 # bundled pnpm, not Tauri's built-in updater.
+#
+# Linux build note: the `appimage` target was intentionally removed from
+# `src-tauri/tauri.conf.json`'s `bundle.targets`. linuxdeploy's deep ELF
+# sweeper could not handle the glibc/musl mix inside
+# `runtime-host/node_modules/` (it crashed on `libc.musl-x86_64.so.1` /
+# statically-linked landlock-run with a bare `failed to run linuxdeploy`).
+# The Linux release ships as `.deb` + `.rpm` only, which covers mainstream
+# distributions. Re-enabling appimage requires either trimming
+# runtime-host/native modules or shipping a separate AppImage recipe; the
+# built-in tauri-appimage path is not viable for this runtime-host.
 
 on:
   push:
@@ -35,10 +45,6 @@ permissions:
 env:
   CARGO_INCREMENTAL: "0"
   RUSTFLAGS: -C debuginfo=line-tables-only
-  # linuxdeploy is itself an AppImage; on GitHub-hosted runners (no FUSE)
-  # force extract-and-run instead of mounting. Set at job level per Tauri's
-  # official GitHub Actions docs so it reaches every child process.
-  APPIMAGE_EXTRACT_AND_RUN: "1"
 
 jobs:
   build:
@@ -81,7 +87,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev \
-            patchelf libssl-dev libfuse2 file zsync gcc-aarch64-linux-gnu
+            patchelf libssl-dev libfuse2 gcc-aarch64-linux-gnu
 
       # The aarch64 Linux target's built-in linker is `aarch64-linux-gnu-gcc`;
       # ensure it resolves on the ARM runner.
@@ -200,7 +206,7 @@ jobs:
           # Set to false for fully automatic (continuous) delivery.
           releaseDraft: true
           prerelease: false
-          args: --target ${{ matrix.target }} --verbose
+          args: --target ${{ matrix.target }}
 
       # Every other platform (Windows/Linux) and macOS without Apple secrets:
       # no APPLE_* env at all, so tauri-cli falls back to the config identity
@@ -218,4 +224,4 @@ jobs:
           # Set to false for fully automatic (continuous) delivery.
           releaseDraft: true
           prerelease: false
-          args: --target ${{ matrix.target }} --verbose
+          args: --target ${{ matrix.target }}
