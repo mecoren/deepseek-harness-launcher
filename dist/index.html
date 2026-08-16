@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>DeepSeek Harness</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { height: 100%; }
+    body {
+      display: flex; align-items: center; justify-content: center;
+      height: 100vh; background: #fafafa; color: #333;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      transition: background-color .2s ease;
+    }
+    /* 暗色模式：背景变深，鲸鱼图标（favicon.svg 内嵌媒体查询）随之反色为白色 */
+    @media (prefers-color-scheme: dark) {
+      body { background: #1b1b1c; color: #e5e7eb; }
+      #msg { color: #a1a1aa; }
+    }
+    .box { text-align: center; }
+    .logo {
+      width: 56px; height: 56px; margin: 0 auto 16px;
+      display: block; opacity: .9;
+      animation: breathe 2.4s ease-in-out infinite;
+    }
+    #msg { font-size: 14px; color: #666; }
+    @keyframes breathe {
+      0%, 100% { transform: scale(1); opacity: .85; }
+      50% { transform: scale(1.06); opacity: 1; }
+    }
+  </style>
+</head>
+<body>
+  <div class="box">
+    <img class="logo" src="favicon.svg" alt="DeepSeek Harness" />
+    <p id="msg">正在启动 DeepSeek Harness…</p>
+  </div>
+  <script>
+    (function () {
+      var m = [
+        "正在启动 DeepSeek Harness…",
+        "正在启动本地服务…",
+        "正在加载 AI 工作区…",
+        "即将就绪…"
+      ];
+      var i = 0;
+      var el = document.getElementById("msg");
+      setInterval(function () {
+        i = (i + 1) % m.length;
+        el.textContent = m[i];
+      }, 3000);
+    })();
+  </script>
+</body>
+</html>

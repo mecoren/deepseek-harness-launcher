@@ -1,0 +1,22 @@
+# Rust / Cargo build output
+/target
+/src-tauri/target
+
+# Build logs & scratch from the agent sandbox
+*.log
+build_msvc*.bat
+_scratch_trash/
+
+# Reference / legacy variants (not part of the shippable app)
+legacy-wry/
+
+# Node (runtime-host commits only metadata: .npmrc + package.json; the offline
+# bundle node.exe + node_modules is regenerated via INSTALL.md, not committed)
+/node_modules
+runtime-host/node.exe
+runtime-host/node_modules/
+runtime-host/.pnpm/
+runtime-host/.npm-cache/
+
+# npm cache
+.npm-cache/

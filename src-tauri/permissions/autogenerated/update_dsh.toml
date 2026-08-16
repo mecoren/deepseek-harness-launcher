@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-update-dsh"
+description = "Enables the update_dsh command without any pre-configured scope."
+commands.allow = ["update_dsh"]
+
+[[permission]]
+identifier = "deny-update-dsh"
+description = "Denies the update_dsh command without any pre-configured scope."
+commands.deny = ["update_dsh"]

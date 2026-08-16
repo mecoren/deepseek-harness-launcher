@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-get-whale-icon-url"
+description = "Enables the get_whale_icon_url command without any pre-configured scope."
+commands.allow = ["get_whale_icon_url"]
+
+[[permission]]
+identifier = "deny-get-whale-icon-url"
+description = "Denies the get_whale_icon_url command without any pre-configured scope."
+commands.deny = ["get_whale_icon_url"]

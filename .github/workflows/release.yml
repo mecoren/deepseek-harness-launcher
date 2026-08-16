@@ -1,0 +1,171 @@
+name: Release
+
+# Continuous Delivery for this Tauri 2 app across all supported targets:
+#   Windows x64 / arm64, Linux x64 / arm64, macOS x64 / arm64.
+# On every `v*` tag push it, per target:
+#   1. rebuilds the offline `runtime-host` package (node + dsh + pnpm) for the
+#      matching OS/arch so the shipped bundle is fully self-contained / offline,
+#   2. builds the platform installer/archive via `tauri-apps/tauri-action`,
+#   3. uploads the artifacts to the GitHub release for the tag.
+#
+# Secrets needed (repository Settings -> Secrets):
+#   GITHUB_TOKEN        provided automatically; needs `contents: write` (set below)
+#   APPLE_SIGNING_IDENTITY / APPLE_ID / APPLE_PASSWORD / APPLE_TEAM_ID
+#                         only required for macOS signing + notarization. Leave
+#                         empty to ship unsigned macOS builds (Gatekeeper will
+#                         then block distribution to other machines).
+# No Tauri updater signing key is required — this app updates itself via the
+# bundled pnpm, not Tauri's built-in updater.
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+env:
+  CARGO_INCREMENTAL: "0"
+  RUSTFLAGS: -C debuginfo=line-tables-only
+
+jobs:
+  build:
+    name: Release ${{ matrix.target }}
+    runs-on: ${{ matrix.platform }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows-2022
+            target: x86_64-pc-windows-msvc
+            node-dist: win-x64
+            node-bin: node.exe
+          - platform: windows-2022
+            target: aarch64-pc-windows-msvc
+            node-dist: win-arm64
+            node-bin: node.exe
+          - platform: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            node-dist: linux-x64
+            node-bin: node
+          - platform: ubuntu-22.04-arm
+            target: aarch64-unknown-linux-gnu
+            node-dist: linux-arm64
+            node-bin: node
+          - platform: macos-latest
+            target: x86_64-apple-darwin
+            node-dist: darwin-x64
+            node-bin: node
+          - platform: macos-latest
+            target: aarch64-apple-darwin
+            node-dist: darwin-arm64
+            node-bin: node
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux system dependencies
+        if: startsWith(matrix.platform, 'ubuntu')
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev \
+            patchelf libssl-dev gcc-aarch64-linux-gnu
+
+      # The aarch64 Linux target's built-in linker is `aarch64-linux-gnu-gcc`;
+      # ensure it resolves on the ARM runner.
+      - name: Set ARM64 Linux linker
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: package.json
+
+      # Installs the frontend (Tauri app) deps; `tauri-action` runs the
+      # configured `beforeBuildCommand` (npm run build) to produce the web UI.
+      - name: Install frontend deps
+        run: npm install
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: "src-tauri -> src-tauri/target"
+          cache-on-failure: true
+
+      # The offline package (node + @deepseek-ai/dsh + pnpm) is gitignored, so
+      # it must be recreated in CI before bundling. Without this step the bundle
+      # would ship without the runtime and fall back to `npx` (needs network on
+      # first run). Each OS/arch downloads the matching Node 22 binary, copies
+      # it into runtime-host, then `npm install` populates node_modules.
+      - name: Pack offline runtime-host (Windows)
+        if: startsWith(matrix.platform, 'windows')
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $nodeVer = "v22.13.0"
+          $nodeUrl = "https://nodejs.org/dist/$nodeVer/node-$nodeVer-${{ matrix.node-dist }}.zip"
+          Invoke-WebRequest -Uri $nodeUrl -OutFile "$env:RUNNER_TEMP/node.zip"
+          Expand-Archive -Path "$env:RUNNER_TEMP/node.zip" -DestinationPath "$env:RUNNER_TEMP/node_tmp"
+          Copy-Item -Path "$env:RUNNER_TEMP/node_tmp/node-$nodeVer-${{ matrix.node-dist }}/node.exe" `
+            -Destination "runtime-host/${{ matrix.node-bin }}" -Force
+          Push-Location runtime-host
+          npm install --no-audit --no-fund
+          Pop-Location
+
+      - name: Pack offline runtime-host (Linux)
+        if: startsWith(matrix.platform, 'ubuntu')
+        run: |
+          set -euo pipefail
+          NODE_VER=v22.13.0
+          DIST="node-${NODE_VER}-${{ matrix.node-dist }}"
+          curl -fsSL "https://nodejs.org/dist/${NODE_VER}/${DIST}.tar.xz" -o "$RUNNER_TEMP/node.tar.xz"
+          mkdir -p "$RUNNER_TEMP/node_tmp"
+          tar -xJf "$RUNNER_TEMP/node.tar.xz" -C "$RUNNER_TEMP/node_tmp"
+          cp "$RUNNER_TEMP/node_tmp/${DIST}/bin/node" "runtime-host/${{ matrix.node-bin }}"
+          chmod +x "runtime-host/${{ matrix.node-bin }}"
+          (cd runtime-host && npm install --no-audit --no-fund)
+
+      - name: Pack offline runtime-host (macOS)
+        if: startsWith(matrix.platform, 'macos')
+        run: |
+          set -euo pipefail
+          NODE_VER=v22.13.0
+          DIST="node-${NODE_VER}-${{ matrix.node-dist }}"
+          curl -fsSL "https://nodejs.org/dist/${NODE_VER}/${DIST}.tar.gz" -o "$RUNNER_TEMP/node.tar.gz"
+          mkdir -p "$RUNNER_TEMP/node_tmp"
+          tar -xzf "$RUNNER_TEMP/node.tar.gz" -C "$RUNNER_TEMP/node_tmp"
+          cp "$RUNNER_TEMP/node_tmp/${DIST}/bin/node" "runtime-host/${{ matrix.node-bin }}"
+          chmod +x "runtime-host/${{ matrix.node-bin }}"
+          (cd runtime-host && npm install --no-audit --no-fund)
+
+      - name: Build & publish release
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # macOS signing + notarization. When these are empty the .app/.dmg is
+          # produced unsigned and Gatekeeper will block it on other machines.
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          # Tauri updater signing (unused here, kept for completeness).
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: "DeepSeek Harness ${{ github.ref_name }}"
+          releaseBody: "See the assets below for your platform."
+          # Draft by default so you can review the artifacts before publishing.
+          # Set to false for fully automatic (continuous) delivery.
+          releaseDraft: true
+          prerelease: false
+          args: --target ${{ matrix.target }}

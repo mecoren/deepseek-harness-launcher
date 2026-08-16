@@ -1,0 +1,99 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_INCREMENTAL: "0"
+  RUSTFLAGS: -C debuginfo=line-tables-only
+
+jobs:
+  lint:
+    name: Fmt & clippy
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: "src-tauri -> src-tauri/target"
+
+      - name: Cargo fmt check
+        working-directory: src-tauri
+        run: cargo fmt --check
+
+      # Advisory for now (continue-on-error): flip to a hard gate by removing
+      # `continue-on-error` and appending `-- -D warnings` once the crate is
+      # clippy-clean. Runs on the Linux target (covers the shared/non-Windows
+      # code paths); the Windows code paths are compile-checked by the build
+      # matrix below.
+      - name: Cargo clippy
+        continue-on-error: true
+        working-directory: src-tauri
+        run: cargo clippy --release --target x86_64-unknown-linux-gnu --all-targets
+
+  build:
+    name: Build ${{ matrix.target }}
+    needs: lint
+    runs-on: ${{ matrix.platform }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows-2022
+            target: x86_64-pc-windows-msvc
+          - platform: windows-2022
+            target: aarch64-pc-windows-msvc
+          - platform: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+          - platform: ubuntu-22.04-arm
+            target: aarch64-unknown-linux-gnu
+          - platform: macos-latest
+            target: x86_64-apple-darwin
+          - platform: macos-latest
+            target: aarch64-apple-darwin
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux system dependencies
+        if: startsWith(matrix.platform, 'ubuntu')
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev \
+            patchelf libssl-dev gcc-aarch64-linux-gnu
+
+      # The aarch64 Linux target's built-in linker is `aarch64-linux-gnu-gcc`;
+      # ensure it resolves on the ARM runner.
+      - name: Set ARM64 Linux linker
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: "src-tauri -> src-tauri/target"
+          cache-on-failure: true
+
+      # The hard gate: the backend must compile for every target.
+      - name: Build release binary
+        working-directory: src-tauri
+        run: cargo build --release --locked --target ${{ matrix.target }}
