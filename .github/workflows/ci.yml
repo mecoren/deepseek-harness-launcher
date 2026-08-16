@@ -46,7 +46,7 @@ jobs:
         run: cargo clippy --release --target x86_64-unknown-linux-gnu --all-targets
 
   build:
-    name: Build ${{ matrix.target }}
+    name: Build ${{ matrix.platform }} (${{ matrix.target }})
     needs: lint
     runs-on: ${{ matrix.platform }}
     strategy:
