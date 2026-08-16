@@ -5,7 +5,9 @@
   "scripts": {
     "tauri": "tauri",
     "dev": "tauri dev",
+    "prebuild": "powershell -NoProfile -ExecutionPolicy Bypass -File tools/sync-version.ps1",
     "build": "tauri build",
+    "postbuild": "powershell -NoProfile -ExecutionPolicy Bypass -File tools/rename-bundle.ps1",
     "build:bin": "tauri build --no-bundle"
   },
   "devDependencies": {
