@@ -11,9 +11,17 @@ name: Release
 # Secrets needed (repository Settings -> Secrets):
 #   GITHUB_TOKEN        provided automatically; needs `contents: write` (set below)
 #   APPLE_SIGNING_IDENTITY / APPLE_ID / APPLE_PASSWORD / APPLE_TEAM_ID
-#                         only required for macOS signing + notarization. Leave
-#                         empty to ship unsigned macOS builds (Gatekeeper will
-#                         then block distribution to other machines).
+#                         all four must be set together (or all four left
+#                         blank). If any one is missing, the "Detect Apple
+#                         signing credentials" step below blanks every APPLE_*
+#                         env before the build — that switches the macOS bundle
+#                         to **ad-hoc signing only (no notarization)**, so the
+#                         build no longer fails with
+#                           `failed to notarize app: Error: Team ID must be at
+#                            least 3 characters`
+#                         The shipped .app / .dmg will still work, but macOS
+#                         users will need to right-click → Open on first launch
+#                         (or `xattr -rd com.apple.quarantine ...`).
 # No Tauri updater signing key is required — this app updates itself via the
 # bundled pnpm, not Tauri's built-in updater.
 
@@ -70,7 +78,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev \
-            patchelf libssl-dev gcc-aarch64-linux-gnu
+            patchelf libssl-dev libfuse2 gcc-aarch64-linux-gnu
 
       # The aarch64 Linux target's built-in linker is `aarch64-linux-gnu-gcc`;
       # ensure it resolves on the ARM runner.
@@ -147,21 +155,49 @@ jobs:
           chmod +x "runtime-host/${{ matrix.node-bin }}"
           (cd runtime-host && npm install --no-audit --no-fund)
 
+      # Only forward Apple signing/notarization secrets when ALL four are set
+      # in repo settings. Forwarding them with any empty value makes
+      # `tauri-action` enter the notarize path with an empty APPLE_TEAM_ID and
+      # abort with `failed to notarize app: Error: Team ID must be at least 3
+      # characters` — see the "Detect Apple signing credentials" step below.
+      - name: Detect Apple signing credentials
+        id: apple-creds
+        if: startsWith(matrix.platform, 'macos')
+        shell: bash
+        run: |
+          if [ -n "${{ secrets.APPLE_SIGNING_IDENTITY }}" ] \
+             && [ -n "${{ secrets.APPLE_ID }}" ] \
+             && [ -n "${{ secrets.APPLE_PASSWORD }}" ] \
+             && [ -n "${{ secrets.APPLE_TEAM_ID }}" ]; then
+            echo "has_creds=true"  >> "$GITHUB_OUTPUT"
+            echo "::notice::All Apple signing secrets are configured — macOS bundle will be signed + notarized."
+          else
+            echo "has_creds=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::At least one Apple signing secret is missing — macOS bundle will be ad-hoc signed only (no notarization). Downstream users will need to right-click → Open the .app on first launch, or run `xattr -rd com.apple.quarantine /path/to/DeepSeek Harness.app`."
+          fi
+
       - name: Build & publish release
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # macOS signing + notarization. When APPLE_SIGNING_IDENTITY is empty we
-          # fall back to "-" (ad-hoc signing via `codesign --sign -`) so the build
-          # does not fail with "no identity found". With a real identity set in
-          # secrets, the app is properly signed + notarized.
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY || '-' }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          # macOS signing + notarization. Only forwarded when the
+          # `Detect Apple signing credentials` step above reports all 4 Apple
+          # secrets are present; otherwise every APPLE_* env below is an empty
+          # string, which makes tauri-action skip both signing and notarization
+          # (the bundle is then only ad-hoc signed).
+          APPLE_SIGNING_IDENTITY: ${{ steps.apple-creds.outputs.has_creds == 'true' && secrets.APPLE_SIGNING_IDENTITY || '' }}
+          APPLE_ID:                ${{ steps.apple-creds.outputs.has_creds == 'true' && secrets.APPLE_ID                || '' }}
+          APPLE_PASSWORD:          ${{ steps.apple-creds.outputs.has_creds == 'true' && secrets.APPLE_PASSWORD          || '' }}
+          APPLE_TEAM_ID:           ${{ steps.apple-creds.outputs.has_creds == 'true' && secrets.APPLE_TEAM_ID           || '' }}
           # Tauri updater signing (unused here, kept for completeness).
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # Linux AppImage: `linuxdeploy` is itself an AppImage and needs FUSE
+          # to self-mount on the runner. GitHub-hosted Linux images (especially
+          # newer ones) ship without FUSE, which makes it abort with a bare
+          # "failed to run linuxdeploy". Forcing extract-and-run skips FUSE
+          # entirely; harmless on Windows/macOS and for the deb/rpm bundles.
+          APPIMAGE_EXTRACT_AND_RUN: "1"
         with:
           tagName: ${{ github.ref_name }}
           releaseName: "DeepSeek Harness ${{ github.ref_name }}"
