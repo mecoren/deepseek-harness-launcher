@@ -17,7 +17,7 @@ use std::sync::Mutex;
 use tauri::{
     menu::{Menu, MenuItem, PredefinedMenuItem},
     tray::TrayIconBuilder,
-    Manager, WindowEvent,
+    Emitter, Manager, WindowEvent,
 };
 
 /// 品牌鲸鱼图标（与 icons/icon.png 一致），编译期嵌入，通过 get_whale_icon_url
@@ -367,7 +367,131 @@ const TITLEBAR_INJECT_JS: &str = r#"
       setTimeout(function () { if (overlay && overlay.parentNode) overlay.remove(); }, 180);
     }
 
-    function updateDsh() {
+    // ---- 更新检查与升级流程 ----
+    // 检查出有新版 → 弹确认对话框；确认后开始升级，升级过程通过
+    // `dsh_update_progress` 事件驱动进度条；完成后弹重启确认对话框。
+    var __dsh_update_info = null;
+    var __dsh_progress = null;
+
+    function listenDshEvent(handler) {
+      return new Promise(function (resolve, reject) {
+        try {
+          var t = window.__TAURI__;
+          if (t && t.event && t.event.listen) {
+            t.event.listen('dsh_update_progress', function (e) { handler(e.payload); })
+              .then(function (un) { if (un) window.__dsh_unlisten_update = un; resolve(); }, reject);
+            return;
+          }
+        } catch (e) {}
+        reject(new Error('Tauri 事件 API 不可用'));
+      });
+    }
+
+    function ensureDialogStyles() {
+      if (document.getElementById('__dsh_dialog_style')) return;
+      var st = document.createElement('style');
+      st.id = '__dsh_dialog_style';
+      st.textContent = '@keyframes dshProgIndeterminate{0%{transform:translateX(-100%)}100%{transform:translateX(300%)}}';
+      document.head.appendChild(st);
+    }
+
+    function mkDialogOverlay(id) {
+      var overlay = document.createElement('div');
+      overlay.id = id;
+      overlay.setAttribute('role', 'dialog');
+      overlay.setAttribute('aria-modal', 'true');
+      overlay.style.cssText = 'position:fixed;inset:0;z-index:2147483647;'
+        + 'display:flex;align-items:center;justify-content:center;'
+        + 'background:rgba(0,0,0,0.6);'
+        + 'font-family:system-ui,-apple-system,"Segoe UI",sans-serif;'
+        + 'opacity:0;transition:opacity 160ms ease;'
+        + '-webkit-app-region:no-drag;';
+      return overlay;
+    }
+
+    function mkDialogCard() {
+      var card = document.createElement('div');
+      card.style.cssText = 'width:400px;max-width:calc(100vw - 32px);box-sizing:border-box;'
+        + 'background:' + THEME.bg + ';border:1px solid ' + THEME.border + ';border-radius:12px;'
+        + 'box-shadow:0 16px 48px rgba(0,0,0,0.28);'
+        + 'overflow:hidden;transform:translateY(8px) scale(0.98);'
+        + 'transition:transform 180ms cubic-bezier(0.21,1.02,0.73,1);';
+      return card;
+    }
+
+    function mkDialogHeader(title, sub) {
+      var header = document.createElement('div');
+      header.style.cssText = 'display:flex;align-items:center;gap:12px;padding:20px 20px 12px;';
+      var whale = document.createElement('img');
+      whale.style.cssText = 'width:36px;height:36px;object-fit:contain;flex-shrink:0;border-radius:8px;';
+      invoke('get_whale_icon_url', {})
+        .then(function (url) { if (url) whale.src = url; })
+        .catch(function () {});
+      var titleWrap = document.createElement('div');
+      titleWrap.style.cssText = 'min-width:0;';
+      var h = document.createElement('div');
+      h.textContent = title;
+      h.style.cssText = 'font-size:16px;font-weight:600;line-height:1.2;color:' + THEME.fg + ';';
+      var s = document.createElement('div');
+      s.textContent = sub;
+      s.style.cssText = 'margin-top:2px;font-size:12px;color:' + THEME.muted + ';';
+      titleWrap.appendChild(h); titleWrap.appendChild(s);
+      header.appendChild(whale); header.appendChild(titleWrap);
+      return header;
+    }
+
+    function dialogVersionRow(label, value) {
+      var r = document.createElement('div');
+      r.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:12px;'
+        + 'padding:10px 12px;background:' + (pageIsDark() ? 'rgba(255,255,255,0.04)' : '#f4f4f5') + ';'
+        + 'border:1px solid ' + THEME.border + ';border-radius:8px;';
+      var l = document.createElement('span');
+      l.textContent = label;
+      l.style.cssText = 'font-size:13px;color:' + THEME.muted + ';';
+      var v = document.createElement('span');
+      v.textContent = value;
+      v.style.cssText = 'font-size:13px;font-weight:600;color:' + THEME.fg + ';font-variant-numeric:tabular-nums;';
+      r.appendChild(l); r.appendChild(v);
+      return r;
+    }
+
+    function dialogBtn(label, primary) {
+      var b = document.createElement('button');
+      b.type = 'button';
+      b.textContent = label;
+      b.style.cssText = 'height:36px;padding:0 16px;border:none;border-radius:8px;cursor:pointer;'
+        + 'font-size:14px;font-weight:500;transition:opacity 150ms ease;'
+        + (primary
+          ? 'background:' + THEME.fg + ';color:' + THEME.bg + ';'
+          : 'background:transparent;color:' + THEME.muted + ';border:1px solid ' + THEME.border + ';');
+      b.onmouseenter = function () { b.style.opacity = '0.8'; };
+      b.onmouseleave = function () { b.style.opacity = '1'; };
+      return b;
+    }
+
+    function closeDialog(overlay) {
+      if (!overlay) return;
+      if (overlay._onKey) document.removeEventListener('keydown', overlay._onKey);
+      overlay.style.opacity = '0';
+      var card = overlay.firstElementChild;
+      if (card) card.style.transform = 'translateY(8px) scale(0.98)';
+      setTimeout(function () { if (overlay && overlay.parentNode) overlay.remove(); }, 180);
+    }
+
+    function animateIn(overlay, card, dismissable) {
+      requestAnimationFrame(function () {
+        overlay.style.opacity = '1';
+        card.style.transform = 'translateY(0) scale(1)';
+      });
+      // 进度对话框不允许点击遮罩 / Esc 关闭，避免升级过程中误关
+      if (dismissable === false) return;
+      overlay.addEventListener('click', function (e) { if (e.target === overlay) closeDialog(overlay); });
+      function onKey(e) { if (e.key === 'Escape') closeDialog(overlay); }
+      document.addEventListener('keydown', onKey);
+      overlay._onKey = onKey;
+    }
+
+    function checkDshUpdate() {
       var item = document.getElementById('__dsh_update_item');
       if (!item) return;
       if (item.getAttribute('data-updating') === '1') return;
@@ -377,40 +501,191 @@ const TITLEBAR_INJECT_JS: &str = r#"
       item.style.opacity = '0.7';
       invoke('check_dsh_update', {})
         .then(function (info) {
-          if (!info || !info.outdated) {
-              var latest = info && info.latest ? info.latest : '';
-              showCenterAlert('已是最新',
-                latest ? ('DeepSeek Harness 当前已是最新版本（v' + latest + '）')
-                       : 'DeepSeek Harness 已是最新版本',
-                'success');
-              setTimeout(function () {
-                item.textContent = oldText;
-                item.style.opacity = '1';
-                item.removeAttribute('data-updating');
-                closeMenu();
-              }, 1200);
-              return null;
-            }
-            item.textContent = (info.message || '发现新版本') + '，正在更新…';
-            return invoke('update_dsh', {});
-          })
-          .then(function (result) {
-            if (!result) return;
-            item.textContent = result;
-            setTimeout(function () {
-            item.textContent = oldText;
-            item.style.opacity = '1';
-            closeMenu();
+          item.textContent = oldText;
+          item.style.opacity = '1';
           item.removeAttribute('data-updating');
-            }, 2000);
+          if (!info || !info.outdated) {
+            showCenterAlert('已是最新',
+              info && info.latest ? ('DeepSeek Harness 当前已是最新版本（v' + info.latest + '）')
+                                 : 'DeepSeek Harness 已是最新版本',
+              'success');
+            closeMenu();
+            return;
+          }
+          closeMenu();
+          openUpdateConfirmDialog(info);
         })
         .catch(function (e) {
-          item.textContent = '更新失败：' + (e && e.message ? e.message : String(e));
-          setTimeout(function () {
-            item.textContent = oldText;
-            item.style.opacity = '1';
+          item.textContent = oldText;
+          item.style.opacity = '1';
           item.removeAttribute('data-updating');
-            }, 2500);
+          showCenterAlert('检查更新失败', e && e.message ? e.message : String(e), 'destructive');
+        });
+    }
+
+    function openUpdateConfirmDialog(info) {
+      if (document.getElementById('__dsh_update_confirm')) return;
+      ensureDialogStyles();
+      __dsh_update_info = info;
+      var overlay = mkDialogOverlay('__dsh_update_confirm');
+      var card = mkDialogCard();
+      card.appendChild(mkDialogHeader('发现新版本', 'DeepSeek Harness 有新版本可用'));
+      var body = document.createElement('div');
+      body.style.cssText = 'padding:4px 20px 16px;display:flex;flex-direction:column;gap:10px;';
+      body.appendChild(dialogVersionRow('当前版本', info.current ? ('v' + info.current) : '未知'));
+      body.appendChild(dialogVersionRow('最新版本', 'v' + info.latest));
+      var desc = document.createElement('div');
+      desc.style.cssText = 'font-size:13px;line-height:1.5;color:' + THEME.muted + ';padding:0 2px;';
+      desc.textContent = '升级过程中将停止当前服务，完成后需重启。是否立即升级？';
+      body.appendChild(desc);
+      card.appendChild(body);
+      var footer = document.createElement('div');
+      footer.style.cssText = 'padding:0 20px 20px;display:flex;justify-content:flex-end;gap:10px;';
+      var cancelBtn = dialogBtn('稍后', false);
+      cancelBtn.onclick = function () { closeDialog(overlay); };
+      var goBtn = dialogBtn('立即升级', true);
+      goBtn.onclick = function () { startDshUpdate(); };
+      footer.appendChild(cancelBtn); footer.appendChild(goBtn);
+      card.appendChild(footer);
+      overlay.appendChild(card);
+      document.body.appendChild(overlay);
+      animateIn(overlay, card);
+    }
+
+    function startDshUpdate() {
+      closeDialog(document.getElementById('__dsh_update_confirm'));
+      openUpdateProgressDialog('正在升级', '正在准备升级…', false);
+      listenDshEvent(function (p) {
+        if (!p) return;
+        if (p.phase === 'done') setProgressValue(100, p.message || '升级完成', false);
+        else if (p.phase === 'error') setProgressError(p.message);
+        else setProgressValue(p.percent, p.message, p.phase === 'installing');
+      })
+        .then(function () { return invoke('update_dsh', {}); })
+        .catch(function () { return invoke('update_dsh', {}); })
+        .then(function (result) {
+          setProgressValue(100, result || '升级完成', false);
+          setTimeout(function () {
+            closeProgressDialog();
+            var info = __dsh_update_info;
+            openRestartConfirmDialog(info && info.latest ? ('v' + info.latest) : '');
+          }, 700);
+        })
+        .catch(function (e) {
+          setProgressError(e && e.message ? e.message : String(e));
+          setTimeout(function () {
+            closeProgressDialog();
+            showCenterAlert('更新失败', e && e.message ? e.message : String(e), 'destructive');
+          }, 1400);
+        });
+    }
+
+    function openUpdateProgressDialog(title, message, indeterminate) {
+      if (document.getElementById('__dsh_update_progress')) return;
+      ensureDialogStyles();
+      var overlay = mkDialogOverlay('__dsh_update_progress');
+      var card = mkDialogCard();
+      card.appendChild(mkDialogHeader(title, '请稍候，不要关闭窗口'));
+      var body = document.createElement('div');
+      body.style.cssText = 'padding:4px 20px 20px;display:flex;flex-direction:column;gap:12px;';
+      var msg = document.createElement('div');
+      msg.style.cssText = 'font-size:13px;line-height:1.5;color:' + THEME.muted + ';min-height:18px;';
+      msg.textContent = message || '请稍候…';
+      var track = document.createElement('div');
+      track.style.cssText = 'height:6px;background:' + (pageIsDark() ? 'rgba(255,255,255,0.1)' : '#e5e7eb') + ';border-radius:3px;overflow:hidden;';
+      var bar = document.createElement('div');
+      bar.style.cssText = 'height:100%;width:0%;border-radius:3px;background:' + THEME.fg + ';transition:width 0.3s ease;';
+      track.appendChild(bar);
+      body.appendChild(msg); body.appendChild(track);
+      card.appendChild(body);
+      overlay.appendChild(card);
+      document.body.appendChild(overlay);
+      animateIn(overlay, card, false);
+      __dsh_progress = { overlay: overlay, card: card, msg: msg, bar: bar };
+      if (indeterminate) setProgressIndeterminate(message);
+      else setProgressValue(10, message, false);
+      return overlay;
+    }
+
+    function setProgressValue(percent, message, indeterminate) {
+      if (!__dsh_progress) return;
+      if (message) __dsh_progress.msg.textContent = message;
+      if (indeterminate) { setProgressIndeterminate(message); return; }
+      var bar = __dsh_progress.bar;
+      bar.style.animation = 'none';
+      bar.style.background = THEME.fg;
+      bar.style.width = Math.min(100, Math.max(0, percent)) + '%';
+    }
+
+    function setProgressIndeterminate(message) {
+      if (!__dsh_progress) return;
+      if (message) __dsh_progress.msg.textContent = message;
+      var bar = __dsh_progress.bar;
+      bar.style.background = THEME.fg;
+      bar.style.width = '33%';
+      bar.style.animation = 'dshProgIndeterminate 1.2s ease-in-out infinite';
+    }
+
+    function setProgressError(message) {
+      if (!__dsh_progress) return;
+      if (message) __dsh_progress.msg.textContent = message;
+      __dsh_progress.msg.style.color = '#ef4444';
+      var bar = __dsh_progress.bar;
+      bar.style.animation = 'none';
+      bar.style.width = '100%';
+      bar.style.background = '#ef4444';
+    }
+
+    function closeProgressDialog() {
+      if (__dsh_progress && __dsh_progress.overlay) closeDialog(__dsh_progress.overlay);
+      __dsh_progress = null;
+    }
+
+    function openRestartConfirmDialog(versionLabel) {
+      if (document.getElementById('__dsh_restart_confirm')) return;
+      ensureDialogStyles();
+      var overlay = mkDialogOverlay('__dsh_restart_confirm');
+      var card = mkDialogCard();
+      card.appendChild(mkDialogHeader('升级完成', 'DeepSeek Harness 已更新' + (versionLabel ? ('到 ' + versionLabel) : '')));
+      var body = document.createElement('div');
+      body.style.cssText = 'padding:4px 20px 16px;';
+      var p = document.createElement('div');
+      p.style.cssText = 'font-size:13px;line-height:1.6;color:' + THEME.muted + ';';
+      p.textContent = '需要重启 DeepSeek Harness 服务才能生效。是否立即重启？';
+      body.appendChild(p);
+      card.appendChild(body);
+      var footer = document.createElement('div');
+      footer.style.cssText = 'padding:0 20px 20px;display:flex;justify-content:flex-end;gap:10px;';
+      var laterBtn = dialogBtn('稍后', false);
+      laterBtn.onclick = function () {
+        closeDialog(overlay);
+        showCenterAlert('等待重启', '服务已停止，可通过菜单「重启 DeepSeek Harness」随时重启。', '');
+      };
+      var restartBtn = dialogBtn('立即重启', true);
+      restartBtn.onclick = function () { restartDshNow(); };
+      footer.appendChild(laterBtn); footer.appendChild(restartBtn);
+      card.appendChild(footer);
+      overlay.appendChild(card);
+      document.body.appendChild(overlay);
+      animateIn(overlay, card);
+    }
+
+    function restartDshNow() {
+      closeDialog(document.getElementById('__dsh_restart_confirm'));
+      openUpdateProgressDialog('正在重启', '正在重启 DeepSeek Harness…', true);
+      invoke('restart_dsh', {})
+        .then(function () {
+          setTimeout(function () {
+            closeProgressDialog();
+            showCenterAlert('重启完成', 'DeepSeek Harness 已重新启动', 'success');
+          }, 500);
+        })
+        .catch(function (e) {
+          setProgressError(e && e.message ? e.message : String(e));
+          setTimeout(function () {
+            closeProgressDialog();
+            showCenterAlert('重启失败', e && e.message ? e.message : String(e), 'destructive');
+          }, 1400);
         });
     }
 
@@ -444,7 +719,6 @@ const TITLEBAR_INJECT_JS: &str = r#"
       aboutItem.onmouseenter = function () { aboutItem.style.background = THEME.hover; aboutItem.style.color = THEME.fg; };
       aboutItem.onmouseleave = function () { aboutItem.style.background = 'transparent'; aboutItem.style.color = THEME.fg; };
       aboutItem.onclick = function (e) { e.stopPropagation(); closeMenu(); openAboutDialog(); };
-      menu.appendChild(aboutItem);
 
       var updateItem = document.createElement('button');
       updateItem.id = '__dsh_update_item';
@@ -455,8 +729,23 @@ const TITLEBAR_INJECT_JS: &str = r#"
         + 'transition:background-color 150ms ease,color 150ms ease;';
       updateItem.onmouseenter = function () { updateItem.style.background = THEME.hover; updateItem.style.color = THEME.fg; };
       updateItem.onmouseleave = function () { updateItem.style.background = 'transparent'; updateItem.style.color = THEME.fg; };
-      updateItem.onclick = function (e) { e.stopPropagation(); updateDsh(); };
+      updateItem.onclick = function (e) { e.stopPropagation(); checkDshUpdate(); };
       menu.appendChild(updateItem);
+
+      var restartItem = document.createElement('button');
+      restartItem.id = '__dsh_restart_item';
+        restartItem.type = 'button';
+        restartItem.setAttribute('role', 'menuitem');
+      restartItem.textContent = '重启 DeepSeek Harness';
+      restartItem.style.cssText = 'display:flex;align-items:center;width:100%;box-sizing:border-box;padding:8px 10px;border:none;background:transparent;border-radius:6px;cursor:pointer;color:' + THEME.fg + ';font:inherit;-webkit-app-region:no-drag;'
+        + 'transition:background-color 150ms ease,color 150ms ease;';
+      restartItem.onmouseenter = function () { restartItem.style.background = THEME.hover; restartItem.style.color = THEME.fg; };
+      restartItem.onmouseleave = function () { restartItem.style.background = 'transparent'; restartItem.style.color = THEME.fg; };
+      restartItem.onclick = function (e) { e.stopPropagation(); closeMenu(); restartDshNow(); };
+      menu.appendChild(restartItem);
+
+      // 关于放在更新下面
+      menu.appendChild(aboutItem);
       bar.appendChild(menu);
 
       // 品牌文字：鲸鱼图标（icon.png，通过 Rust 命令获取 data URI）+ 文字；点击展开菜单
@@ -605,8 +894,17 @@ struct UpdateCheckResult {
     message: String,
 }
 
+/// Progress events emitted on `dsh_update_progress` while `update_dsh` runs, so
+/// the injected UI can drive its progress bar by phase.
+#[derive(Clone, serde::Serialize)]
+struct UpdateProgress {
+    phase: String,
+    percent: u8,
+    message: String,
+}
+
 /// Restart the local `dsh web` server and point the main window at the new URL.
-fn restart_dsh(app: &tauri::AppHandle) -> Result<(), String> {
+fn restart_dsh_service(app: &tauri::AppHandle) -> Result<(), String> {
     let resource_dir = app.path().resource_dir().ok();
     match dsh::launch_and_wait(resource_dir) {
         Some((url, pid)) => {
@@ -686,11 +984,25 @@ async fn check_dsh_update(app: tauri::AppHandle) -> Result<UpdateCheckResult, St
 /// Update the local `@deepseek-ai/dsh` package used by this project.
 ///
 /// Stops the running `dsh web` first (avoid EBUSY on Windows), installs the new
-/// package, then restarts the server automatically.
+/// package, and reports progress over the `dsh_update_progress` event. It does
+/// NOT restart the server — the UI asks the user first (the server stays down
+/// until they pick "restart now" or use the menu item later).
 #[tauri::command]
 async fn update_dsh(app: tauri::AppHandle) -> Result<String, String> {
     let resource_dir = app.path().resource_dir().ok();
+    let app2 = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
+        let emit = |phase: &str, percent: u8, message: &str| {
+            let _ = app2.emit(
+                "dsh_update_progress",
+                UpdateProgress {
+                    phase: phase.to_string(),
+                    percent,
+                    message: message.to_string(),
+                },
+            );
+        };
+
         let info = dsh::check_update(resource_dir.clone())?;
         if !info.outdated {
             return Ok(format!("已是最新 v{}", info.latest));
@@ -700,26 +1012,38 @@ async fn update_dsh(app: tauri::AppHandle) -> Result<String, String> {
         let new = info.latest.clone();
 
         // Stop existing dsh web before touching node_modules (avoid EBUSY).
-        let state = app.state::<AppState>();
+        emit("stopping", 15, "正在停止 DeepSeek Harness 服务…");
+        let state = app2.state::<AppState>();
         let old_pid = state.dsh_pid.lock().unwrap().take();
         if let Some(pid) = old_pid {
             dsh::kill_by_pid(pid);
         }
 
-        let install_result = dsh::install_update(resource_dir);
-        // Always try to bring the server back, even if install failed, so the app
-        // doesn't stay broken.
-        let restart_result = restart_dsh(&app);
-
-        match (install_result, restart_result) {
-            (Ok(()), Ok(())) => Ok(format!("v{old} → v{new} 更新完成")),
-            (Err(e), Ok(())) => Err(format!("{e}（服务已重启）")),
-            (Ok(()), Err(e)) => Err(format!("更新完成但重启失败: {e}")),
-            (Err(e1), Err(e2)) => Err(format!("{e1}；且重启失败: {e2}")),
+        // Install the new package. The install itself is a single blocking step;
+        // the UI switches to an indeterminate bar for this phase.
+        emit("installing", 40, &format!("正在下载并安装 v{new} …"));
+        match dsh::install_update(resource_dir) {
+            Ok(()) => {
+                emit("done", 100, "安装完成，请重启服务生效");
+                Ok(format!("v{old} → v{new} 更新完成"))
+            }
+            Err(e) => {
+                emit("error", 0, &format!("更新失败：{e}"));
+                Err(e)
+            }
         }
     })
     .await
     .map_err(|e| format!("更新任务失败: {e}"))?
+}
+
+/// Restart the local `dsh web` server. Called from the UI after an update
+/// (user picked "restart now") or from the menu item as a manual recovery.
+#[tauri::command]
+async fn restart_dsh(app: tauri::AppHandle) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || restart_dsh_service(&app))
+        .await
+        .map_err(|e| format!("重启任务失败: {e}"))?
 }
 
 /// Return the DeepSeek whale brand icon as a `data:image/png;base64,...` URL so
@@ -900,6 +1224,7 @@ fn main() {
             window_action,
             check_dsh_update,
             update_dsh,
+            restart_dsh,
             get_whale_icon_url,
             get_about_info
         ])

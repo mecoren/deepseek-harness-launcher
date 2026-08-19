@@ -4,7 +4,9 @@ fn main() {
             "window_action",
             "check_dsh_update",
             "update_dsh",
+            "restart_dsh",
             "get_whale_icon_url",
+            "get_about_info",
         ]),
     ))
     .expect("failed to run tauri-build");

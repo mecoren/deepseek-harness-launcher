@@ -183,10 +183,22 @@
           "markdownDescription": "Enables the check_dsh_update command without any pre-configured scope."
         },
         {
+          "description": "Enables the get_about_info command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-get-about-info",
+          "markdownDescription": "Enables the get_about_info command without any pre-configured scope."
+        },
+        {
           "description": "Enables the get_whale_icon_url command without any pre-configured scope.",
           "type": "string",
           "const": "allow-get-whale-icon-url",
           "markdownDescription": "Enables the get_whale_icon_url command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the restart_dsh command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-restart-dsh",
+          "markdownDescription": "Enables the restart_dsh command without any pre-configured scope."
         },
         {
           "description": "Enables the update_dsh command without any pre-configured scope.",
@@ -207,10 +219,22 @@
           "markdownDescription": "Denies the check_dsh_update command without any pre-configured scope."
         },
         {
+          "description": "Denies the get_about_info command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-get-about-info",
+          "markdownDescription": "Denies the get_about_info command without any pre-configured scope."
+        },
+        {
           "description": "Denies the get_whale_icon_url command without any pre-configured scope.",
           "type": "string",
           "const": "deny-get-whale-icon-url",
           "markdownDescription": "Denies the get_whale_icon_url command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the restart_dsh command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-restart-dsh",
+          "markdownDescription": "Denies the restart_dsh command without any pre-configured scope."
         },
         {
           "description": "Denies the update_dsh command without any pre-configured scope.",
