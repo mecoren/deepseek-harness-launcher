@@ -33,23 +33,39 @@
 </head>
 <body>
   <div class="box">
-    <img class="logo" src="favicon.svg" alt="DeepSeek Harness" />
+    <img class="logo" id="spinner" src="favicon.svg" alt="DeepSeek Harness" />
     <p id="msg">正在启动 DeepSeek Harness…</p>
   </div>
   <script>
     (function () {
-      var m = [
+      var el = document.getElementById("msg");
+      var tips = [
         "正在启动 DeepSeek Harness…",
         "正在启动本地服务…",
         "正在加载 AI 工作区…",
         "即将就绪…"
       ];
       var i = 0;
-      var el = document.getElementById("msg");
-      setInterval(function () {
-        i = (i + 1) % m.length;
-        el.textContent = m[i];
+      // Cycle the hint only while loading. Once the app takes over the message
+      // (npx download notice, error, or navigation) it sets `data-locked="1"`
+      // and we stop clobbering it.
+      var timer = setInterval(function () {
+        if (el.dataset.locked === "1") { clearInterval(timer); return; }
+        i = (i + 1) % tips.length;
+        el.textContent = tips[i];
       }, 3000);
+
+      // Safety net: if the page is still spinning well after Rust's 240s
+      // watchdog, show a clear failure instead of an endless spinner.
+      setTimeout(function () {
+        var sp = document.getElementById("spinner");
+        if (sp && sp.style.display !== "none") {
+          el.dataset.locked = "1";
+          el.style.color = "#ef4444";
+          el.innerHTML = "启动超时：本地服务未能在预期时间内就绪。<br>"
+            + "请确认安装包含完整 runtime-host，或检查网络后重试。";
+        }
+      }, 270000);
     })();
   </script>
 </body>

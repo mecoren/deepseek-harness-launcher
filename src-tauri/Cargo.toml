@@ -17,8 +17,8 @@ url = "2"
 base64 = "0.22"
 
 [profile.release]
-lto = true
-opt-level = "s"
+lto = "thin"
+opt-level = 3
 panic = "abort"
 strip = true
-codegen-units = 1
+codegen-units = 256

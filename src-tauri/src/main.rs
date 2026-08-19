@@ -241,6 +241,132 @@ const TITLEBAR_INJECT_JS: &str = r#"
       fallbackAlert(title, desc, variant);
     }
 
+    // ---- 关于 (About) dialog：仿 shadcn Dialog + Card 观感 ----
+    // shadcn 设计令牌：rounded-lg(12px) / border / bg-background / text-foreground
+    // / text-muted-foreground / ring / overlay(black/60)。这里用与 wait-home
+    // index.css 一致的 token 复刻，不引入外部组件/网络。
+    function openAboutDialog() {
+      if (document.getElementById('__dsh_about')) return;
+
+      var overlay = document.createElement('div');
+      overlay.id = '__dsh_about';
+      overlay.setAttribute('role', 'dialog');
+      overlay.setAttribute('aria-modal', 'true');
+      overlay.style.cssText = 'position:fixed;inset:0;z-index:2147483647;'
+        + 'display:flex;align-items:center;justify-content:center;'
+        + 'background:rgba(0,0,0,0.6);'
+        + 'font-family:system-ui,-apple-system,"Segoe UI",sans-serif;'
+        + 'opacity:0;transition:opacity 160ms ease;'
+        + '-webkit-app-region:no-drag;';
+
+      var card = document.createElement('div');
+      card.style.cssText = 'width:380px;max-width:calc(100vw - 32px);box-sizing:border-box;'
+        + 'background:' + THEME.bg + ';border:1px solid ' + THEME.border + ';border-radius:12px;'
+        + 'box-shadow:0 16px 48px rgba(0,0,0,0.28);'
+        + 'overflow:hidden;transform:translateY(8px) scale(0.98);'
+        + 'transition:transform 180ms cubic-bezier(0.21,1.02,0.73,1);';
+
+      // 顶部品牌条：鲸鱼图标 + 标题（shadcn CardHeader 风格，左对齐）
+      var header = document.createElement('div');
+      header.style.cssText = 'display:flex;align-items:center;gap:12px;padding:20px 20px 12px;';
+      var whale = document.createElement('img');
+      whale.style.cssText = 'width:36px;height:36px;object-fit:contain;flex-shrink:0;border-radius:8px;';
+      invoke('get_whale_icon_url', {})
+        .then(function (url) { if (url) whale.src = url; })
+        .catch(function () {});
+      var titleWrap = document.createElement('div');
+      titleWrap.style.cssText = 'min-width:0;';
+      var h = document.createElement('div');
+      h.textContent = 'DeepSeek Harness';
+      h.style.cssText = 'font-size:16px;font-weight:600;line-height:1.2;color:' + THEME.fg + ';';
+      var sub = document.createElement('div');
+      sub.textContent = '桌面启动器';
+      sub.style.cssText = 'margin-top:2px;font-size:12px;color:' + THEME.muted + ';';
+      titleWrap.appendChild(h); titleWrap.appendChild(sub);
+      header.appendChild(whale); header.appendChild(titleWrap);
+      card.appendChild(header);
+
+      // 版本信息卡（shadcn Card 风格，muted 背景 + 圆角 + 分隔行）
+      var body = document.createElement('div');
+      body.style.cssText = 'padding:4px 20px 16px;display:flex;flex-direction:column;gap:10px;';
+
+      function row(label, value) {
+        var r = document.createElement('div');
+        r.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:12px;'
+          + 'padding:10px 12px;background:' + (pageIsDark() ? 'rgba(255,255,255,0.04)' : '#f4f4f5') + ';'
+          + 'border:1px solid ' + THEME.border + ';border-radius:8px;';
+        var l = document.createElement('span');
+        l.textContent = label;
+        l.style.cssText = 'font-size:13px;color:' + THEME.muted + ';';
+        var v = document.createElement('span');
+        v.textContent = value;
+        v.style.cssText = 'font-size:13px;font-weight:600;color:' + THEME.fg + ';'
+          + 'font-variant-numeric:tabular-nums;';
+        r.appendChild(l); r.appendChild(v);
+        return r;
+      }
+      var launcherRow = row('启动器版本', '…');
+      var dshRow = row('DeepSeek Harness', '…');
+      body.appendChild(launcherRow);
+      body.appendChild(dshRow);
+      card.appendChild(body);
+
+      // 底部：关闭按钮（shadcn Button 风格，primary 实心）
+      var footer = document.createElement('div');
+      footer.style.cssText = 'padding:0 20px 20px;display:flex;justify-content:flex-end;';
+      var closeBtn = document.createElement('button');
+      closeBtn.type = 'button';
+      closeBtn.textContent = '知道了';
+      closeBtn.style.cssText = 'height:36px;padding:0 16px;border:none;border-radius:8px;cursor:pointer;'
+        + 'font-size:14px;font-weight:500;background:' + THEME.fg + ';color:' + THEME.bg + ';'
+        + 'transition:opacity 150ms ease,-webkit-app-region:no-drag;';
+      closeBtn.onmouseenter = function () { closeBtn.style.opacity = '0.85'; };
+      closeBtn.onmouseleave = function () { closeBtn.style.opacity = '1'; };
+      closeBtn.onclick = closeAbout;
+      footer.appendChild(closeBtn);
+      card.appendChild(footer);
+
+      overlay.appendChild(card);
+      document.body.appendChild(overlay);
+
+      // 动画入场
+      requestAnimationFrame(function () {
+        overlay.style.opacity = '1';
+        card.style.transform = 'translateY(0) scale(1)';
+      });
+
+      // 点击遮罩 / Esc 关闭
+      overlay.addEventListener('click', function (e) { if (e.target === overlay) closeAbout(); });
+      function onKey(e) { if (e.key === 'Escape') closeAbout(); }
+      document.addEventListener('keydown', onKey);
+      overlay._onKey = onKey;
+
+      // 拉取真实版本号
+      invoke('get_about_info', {})
+        .then(function (info) {
+          if (!info) return;
+          launcherRow.lastChild.textContent = 'v' + (info.launcher_version || '?');
+          var d = info.dsh_version;
+          dshRow.lastChild.textContent = d ? ('v' + d) : 'npx（未打包离线包）';
+          dshRow.lastChild.style.color = d ? THEME.fg : '#f59e0b';
+        })
+        .catch(function (e) {
+          launcherRow.lastChild.textContent = 'v' + (window.__DSH_LAUNCHER_VER__ || '?');
+          dshRow.lastChild.textContent = '获取失败';
+          dshRow.lastChild.style.color = '#ef4444';
+        });
+    }
+
+    function closeAbout() {
+      var overlay = document.getElementById('__dsh_about');
+      if (!overlay) return;
+      if (overlay._onKey) document.removeEventListener('keydown', overlay._onKey);
+      overlay.style.opacity = '0';
+      var card = overlay.firstElementChild;
+      if (card) card.style.transform = 'translateY(8px) scale(0.98)';
+      setTimeout(function () { if (overlay && overlay.parentNode) overlay.remove(); }, 180);
+    }
+
     function updateDsh() {
       var item = document.getElementById('__dsh_update_item');
       if (!item) return;
@@ -308,6 +434,18 @@ const TITLEBAR_INJECT_JS: &str = r#"
         + 'background:' + THEME.bg + ';border:1px solid ' + THEME.border + ';border-radius:8px;'
         + 'box-shadow:0 8px 24px rgba(0,0,0,0.12);z-index:2147483647;display:none;'
         + 'font-size:14px;color:' + THEME.fg + ';-webkit-app-region:no-drag;';
+      var aboutItem = document.createElement('button');
+      aboutItem.id = '__dsh_about_item';
+        aboutItem.type = 'button';
+        aboutItem.setAttribute('role', 'menuitem');
+      aboutItem.textContent = '关于';
+      aboutItem.style.cssText = 'display:flex;align-items:center;width:100%;box-sizing:border-box;padding:8px 10px;border:none;background:transparent;border-radius:6px;cursor:pointer;color:' + THEME.fg + ';font:inherit;-webkit-app-region:no-drag;'
+        + 'transition:background-color 150ms ease,color 150ms ease;';
+      aboutItem.onmouseenter = function () { aboutItem.style.background = THEME.hover; aboutItem.style.color = THEME.fg; };
+      aboutItem.onmouseleave = function () { aboutItem.style.background = 'transparent'; aboutItem.style.color = THEME.fg; };
+      aboutItem.onclick = function (e) { e.stopPropagation(); closeMenu(); openAboutDialog(); };
+      menu.appendChild(aboutItem);
+
       var updateItem = document.createElement('button');
       updateItem.id = '__dsh_update_item';
         updateItem.type = 'button';
@@ -416,6 +554,40 @@ const TITLEBAR_INJECT_JS: &str = r#"
   // Wait until the page has committed a <body> before building (Rust retries on a
   // timer to cover the navigate-commit + SPA render race).
   if (document.body) build();
+})();
+"#;
+
+/// Shown when we fall back to `npx` (no bundled offline runtime-host). The
+/// first-run download of `@deepseek-ai/dsh` can take a while, so tell the user
+/// it is not frozen.
+const LOADING_NPX_JS: &str = r#"
+(function(){
+  var el = document.getElementById('msg');
+  if (el) {
+    el.dataset.locked = '1';
+    el.innerHTML = '正在通过 npx 下载并启动 @deepseek-ai/dsh …'
+      + '<br><small>（首次运行较慢，请保持网络连接）</small>';
+  }
+})();
+"#;
+
+/// Shown if `dsh web` never becomes ready within the timeout. Replaces the
+/// infinite spinner so the user understands what went wrong.
+const LOADING_ERROR_JS: &str = r#"
+(function(){
+  var sp = document.getElementById('spinner');
+  if (sp) sp.style.display = 'none';
+  var el = document.getElementById('msg');
+  if (el) {
+    el.dataset.locked = '1';
+    el.innerHTML = '启动 DeepSeek Harness 失败 🐋<br><br>'
+      + '未能在限定时间内启动本地服务，可能原因：<br>'
+      + '1. 离线运行包（runtime-host/node.exe + @deepseek-ai/dsh）未打包进安装包；<br>'
+      + '2. 当前网络无法访问 npm，无法以 npx 方式下载 @deepseek-ai/dsh；<br>'
+      + '3. 系统缺少 WebView2 运行时。<br><br>'
+      + '请确认构建时已包含完整 runtime-host，或检查网络后重试。';
+    el.style.color = '#ef4444';
+  }
 })();
 "#;
 
@@ -561,6 +733,25 @@ fn get_whale_icon_url() -> Result<String, String> {
     Ok(format!("data:image/png;base64,{b64}"))
 }
 
+/// Information shown in the About dialog: the launcher's own version (from
+/// `Cargo.toml`) and the version of the `@deepseek-ai/dsh` CLI bundled for this
+/// project (offline runtime-host). `dsh_version` is `None` when the offline
+/// package is absent and we fall back to `npx` at runtime.
+#[derive(serde::Serialize)]
+struct AboutInfo {
+    launcher_version: String,
+    dsh_version: Option<String>,
+}
+
+#[tauri::command]
+fn get_about_info(app: tauri::AppHandle) -> Result<AboutInfo, String> {
+    let resource_dir = app.path().resource_dir().ok();
+    Ok(AboutInfo {
+        launcher_version: env!("CARGO_PKG_VERSION").to_string(),
+        dsh_version: dsh::current_dsh_version(resource_dir),
+    })
+}
+
 fn main() {
     tauri::Builder::default()
         // Single instance: launching the exe again must surface the existing
@@ -649,6 +840,15 @@ fn main() {
             // cannot cross the `std::thread::spawn` boundary.
             let handle = app.handle().clone();
             let resource_dir = app.path().resource_dir().ok();
+            // If no bundled offline runtime-host exists we fall back to `npx`,
+            // whose first-run download can take a while — tell the user so the
+            // loading page does not look frozen.
+            let mode = dsh::launch_mode(resource_dir.clone());
+            if mode == "npx" {
+                if let Some(w) = handle.get_webview_window("main") {
+                    let _ = w.eval(LOADING_NPX_JS);
+                }
+            }
             std::thread::spawn(move || {
                 let state = handle.state::<AppState>();
                 match dsh::launch_and_wait(resource_dir) {
@@ -682,6 +882,11 @@ fn main() {
                     }
                     None => {
                         eprintln!("[dsh] failed to launch harness");
+                        // Surface a clear error instead of leaving the app
+                        // stuck on the loading spinner forever.
+                        if let Some(w) = handle.get_webview_window("main") {
+                            let _ = w.eval(LOADING_ERROR_JS);
+                        }
                     }
                 }
             });
@@ -695,7 +900,8 @@ fn main() {
             window_action,
             check_dsh_update,
             update_dsh,
-            get_whale_icon_url
+            get_whale_icon_url,
+            get_about_info
         ])
         .on_window_event(|window, event| {
             // Closing the window hides it (tray owns the lifetime), it does not quit.

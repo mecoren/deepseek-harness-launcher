@@ -64,7 +64,7 @@ npm run dev                # = tauri dev：编译 debug 二进制并打开窗口
 ```powershell
 cd deepseek-harness-launcher
 npm install                 # 拉取 @tauri-apps/cli
-npm run build              # = tauri build（targets: "all"）
+npm run build              # = tauri build（按 tauri.conf.json 的 bundle.targets）
 ```
 
 产物在：
@@ -73,7 +73,17 @@ npm run build              # = tauri build（targets: "all"）
 src-tauri/target/x86_64-pc-windows-msvc/release/bundle/
 ```
 
-含 NSIS 安装包（`.exe`）、便携版（`.exe` / `.zip`）等。
+含 **NSIS 安装包（`.exe`）**、便携版（`.exe` / `.zip`）等。
+
+> ⚠️ **已移除 MSI（WiX）目标**：`runtime-host` 体积较大（Node ≈ 87 MB + 庞大的
+> `node_modules`），WiX 生成的 MSI 在**构建与安装阶段都明显更慢、更易卡顿**。
+> Windows 上现默认出 **NSIS** 安装包，速度快、体积小、体验更顺。
+> 若确实需要 MSI（如企业推送），再手动把 `"msi"` 加回 `tauri.conf.json` 的
+> `bundle.targets` 即可，但请知悉它会明显拖慢安装。
+
+> 构建速度：release 配置已从「full LTO + 单 codegen 单元（`opt-level="s"`）」
+> 改为「`lto="thin"` + `codegen-units=256` + `opt-level=3`」，`cargo build`
+> 的编译耗时大幅下降，二进制体积基本不变。
 
 > 等价命令：`npm run build:bin` → `tauri build --no-bundle`（只编译，不打安装包）。
 
@@ -183,11 +193,34 @@ Tauri 的资源文件是 MSVC COFF 格式，GNU `ld` 无法链接。
 **必须用 MSVC 目标**：`cargo build --release --target x86_64-pc-windows-msvc`
 （并确保装了 VS Build Tools 2022 的“C++ 桌面开发”工作负载）。
 
-**Q: 启动后白屏 / 一直转圈**
-- 确认 Windows 已安装 WebView2 运行时。
-- 看终端（或 `target/.../release` 下日志）是否打印 `[dsh] ready in ...s -> http://127.0.0.1:<port>`；
-  若无，可能是 `runtime-host/` 缺失且 `npx` 联网失败（首次需联网）。
-- `dsh web` 启动有 240s 看门狗超时，超时会被强杀。
+**Q: 启动后卡在加载页 / 一直转圈（最常见）**
+
+现象：打开应用后一直停在「正在启动 DeepSeek Harness…」转圈页。
+
+根因（按概率）：
+1. **离线运行包没打进安装包**——仓库里的 `runtime-host/` 仅含 `package.json` /
+   `package-lock.json`（`node.exe`、`node_modules` 被 `.gitignore` 忽略）。
+   如果打包前没有按第 5 节重新生成离线包，安装包里就**没有** `node.exe` +
+   `@deepseek-ai/dsh`，应用会回退到 `npx`。而 `npx` 需要**终端用户机器上有
+   Node 并能联网**——没有则会永久卡住、且不弹任何提示。
+   → 修复：按第 5 节生成离线包后重新 `npm run build`。
+2. **`npx` 首次下载慢**：即使有网络，首次 `npx -y @deepseek-ai/dsh web` 要下载
+   几十~上百 MB，看起来像“卡死”。现已在加载页提示「正在通过 npx 下载…」。
+3. **读不到就绪行**：旧逻辑只读 stdout 且要求固定前缀 `dsh web: `。`dsh web`
+   若把 URL 打到了 **stderr**（或格式是 vite 风格的 `Local: http://127.0.0.1:PORT`），
+   就会被漏掉而永久转圈。新版本**同时扫描 stdout + stderr**，并改为“在任意位置匹配
+   `http://127.0.0.1:<port>` / `http://localhost:<port>`”，兼容各种 banner 格式。
+4. **缺 WebView2 运行时**：确认 Windows 已安装 WebView2。
+
+现在的行为改进：
+- 启动线程先判断走离线还是 `npx`，`npx` 会在加载页给出下载提示。
+- `dsh web` 启动有 **240s 看门狗**：超时会强杀进程，并**在加载页直接显示红色错误
+  提示**（含上述原因），不再“假装还在加载”无限转圈。
+- 加载页本身还有一道 ~270s 的客户端兜底：若仍在工作，会显示「启动超时」并给出排查方向。
+
+排查：看 `target/.../release` 下日志是否打印
+`[dsh] ready in ...s -> http://127.0.0.1:<port>`；若无，多半是离线包缺失或 `npx`
+联网失败。
 
 **Q: `dsh web` 启动即崩，报 `... exists and is not a symlink; remove it so dsh can manage the installation fallback`**
 `dsh web` 启动时会把全局 profile 目录

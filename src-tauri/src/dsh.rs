@@ -24,8 +24,6 @@ use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-/// Prefix of the canonical readiness line printed by `dsh web`.
-const READINESS_PREFIX: &str = "dsh web: ";
 /// Maximum seconds to wait for the readiness line before giving up.
 const READY_TIMEOUT_SECS: u64 = 240;
 
@@ -106,6 +104,20 @@ fn current_version(dir: &std::path::Path) -> Option<String> {
     let text = std::fs::read_to_string(pkg).ok()?;
     let json: serde_json::Value = serde_json::from_str(&text).ok()?;
     json.get("version")?.as_str().map(ToOwned::to_owned)
+}
+
+/// Return the version of the bundled/offline `@deepseek-ai/dsh` CLI used by this
+/// project (from `runtime-host/node_modules/@deepseek-ai/dsh/package.json`).
+/// Returns `None` when the offline package is not present (we fall back to
+/// `npx` at runtime).
+pub fn current_dsh_version(resource_dir: Option<PathBuf>) -> Option<String> {
+    for base in candidate_bases(resource_dir) {
+        let dir = base.join("runtime-host");
+        if let Some(v) = current_version(&dir) {
+            return Some(v);
+        }
+    }
+    None
 }
 
 /// Run a command with a timeout while capturing stdout/stderr.
@@ -267,8 +279,14 @@ pub fn launch_and_wait(resource_dir: Option<PathBuf>) -> Option<(String, u32)> {
     let pid = child.id();
     eprintln!("[dsh] spawned (pid={pid}), waiting for readiness line ...");
 
+    // Read both stdout and stderr concurrently. `dsh web` may print its ready
+    // URL to either stream, so scanning only stdout (the old behaviour) could
+    // miss it and leave the app stuck on the loading screen forever.
     let stdout = child.stdout.take()?;
-    let reader = BufReader::new(stdout).lines();
+    let stderr = child.stderr.take()?;
+    let (tx, rx) = mpsc::channel::<String>();
+    spawn_line_reader(stdout, tx.clone());
+    spawn_line_reader(stderr, tx);
 
     // Watchdog: if we never become ready, force-kill the process tree.
     let ready = Arc::new(AtomicBool::new(false));
@@ -283,11 +301,7 @@ pub fn launch_and_wait(resource_dir: Option<PathBuf>) -> Option<(String, u32)> {
     });
 
     let start = Instant::now();
-    for line in reader {
-        let line = match line {
-            Ok(l) => l,
-            Err(_) => break,
-        };
+    for line in rx {
         if let Some(url) = parse_readiness_line(&line) {
             ready.store(true, Ordering::SeqCst);
             // Detach the child so the server keeps running until the app
@@ -303,26 +317,60 @@ pub fn launch_and_wait(resource_dir: Option<PathBuf>) -> Option<(String, u32)> {
     None
 }
 
+/// Pump a reader's lines into a channel. The channel closes (and `rx`'s
+/// iterator ends) once both reader threads drop their senders — i.e. when the
+/// child process exits and both pipes are closed.
+fn spawn_line_reader<R: std::io::Read + Send + 'static>(reader: R, tx: mpsc::Sender<String>) {
+    thread::spawn(move || {
+        let buf = BufReader::new(reader);
+        for line in buf.lines() {
+            match line {
+                Ok(l) => {
+                    if tx.send(l).is_err() {
+                        break;
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+    });
+}
+
+/// Which launch path `spawn_dsh_web` will take: the bundled offline CLI
+/// (`"offline"`) or the `npx` fallback (`"npx"`). Used to show the right
+/// loading message (the npx download can take a while on first run).
+pub fn launch_mode(resource_dir: Option<PathBuf>) -> &'static str {
+    for base in candidate_bases(resource_dir) {
+        let node = base.join("runtime-host").join(node_bin_name());
+        let cli = base.join("runtime-host/node_modules/@deepseek-ai/dsh/lib/bin.js");
+        if node.exists() && cli.exists() {
+            return "offline";
+        }
+    }
+    "npx"
+}
+
 /// Parse the readiness line and return a clean loopback origin URL.
+///
+/// Rather than matching a fixed `dsh web: ` prefix, we scan for a loopback
+/// origin (`http://127.0.0.1:<port>` or `http://localhost:<port>`) anywhere in
+/// the line. `dsh web` may emit slightly different banner formats (e.g.
+/// vite-style `Local: http://127.0.0.1:5173`), and tolerating them avoids a
+/// silent "stuck on loading screen".
 fn parse_readiness_line(line: &str) -> Option<String> {
     let l = line.trim_end_matches(['\r', '\n']);
-    if !l.starts_with(READINESS_PREFIX) {
-        return None;
+    for host in ["http://127.0.0.1:", "http://localhost:"] {
+        if let Some(pos) = l.find(host) {
+            let after = &l[pos + host.len()..];
+            let port: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
+            if !port.is_empty() {
+                // Normalise `localhost` -> `127.0.0.1` so the navigation URL is
+                // always a clear loopback address.
+                return Some(format!("http://127.0.0.1:{port}"));
+            }
+        }
     }
-    let rest = &l[READINESS_PREFIX.len()..];
-    let token = rest.split(|c: char| c.is_whitespace()).next()?;
-    if token.is_empty() {
-        return None;
-    }
-    let (scheme_host, after) = token.rsplit_once(':')?;
-    if !(scheme_host == "http://127.0.0.1" || scheme_host == "http://localhost") {
-        return None;
-    }
-    let port: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
-    if port.is_empty() {
-        return None;
-    }
-    Some(format!("{scheme_host}:{port}"))
+    None
 }
 
 /// Spawn the harness. Prefers the bundled offline CLI, falls back to `npx`.
@@ -348,12 +396,11 @@ fn spawn_dsh_web(resource_dir: Option<PathBuf>) -> Option<Child> {
                 .args(["web", "--host", "127.0.0.1", "--port", "0"])
                 .stdin(Stdio::null())
                 .stdout(Stdio::piped())
-                // stderr -> NUL: the launcher is a GUI app without a console;
-                // `inherit` would hand node a NULL handle (writes fail) and,
-                // without CREATE_NO_WINDOW, Windows pops a new console window
-                // for the console-subsystem node.exe — closing it kills dsh web
-                // and leaves the app stuck on the loading screen.
-                .stderr(Stdio::null());
+                // Pipe stderr too: `dsh web` may print its readiness URL there,
+                // and we scan both streams so detection never silently fails.
+                // `inherit` would hand node a NULL handle (GUI app, no console)
+                // and, without CREATE_NO_WINDOW, pop a console window.
+                .stderr(Stdio::piped());
             #[cfg(windows)]
             cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
             return cmd.spawn().ok();
@@ -368,7 +415,7 @@ fn spawn_dsh_web(resource_dir: Option<PathBuf>) -> Option<Child> {
             .args(["--host", "127.0.0.1", "--port", "0"])
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
+            .stderr(Stdio::piped())
             .creation_flags(0x08000000) // CREATE_NO_WINDOW
             .spawn()
             .ok()
@@ -381,7 +428,7 @@ fn spawn_dsh_web(resource_dir: Option<PathBuf>) -> Option<Child> {
             .args(["--host", "127.0.0.1", "--port", "0"])
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
+            .stderr(Stdio::piped())
             .spawn()
             .ok()
     }
