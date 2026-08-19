@@ -99,11 +99,11 @@ $artifactExts = @('.exe', '.msi', '.deb', '.rpm', '.dmg', '.appimage')
 $bundleDirs = @()
 if (Test-Path $targetDir) {
   # native build: target/release/bundle
-  $native = Join-Path $targetDir 'release' 'bundle'
+  $native = Join-Path (Join-Path $targetDir 'release') 'bundle'
   if (Test-Path $native) { $bundleDirs += $native }
   # cross builds: target/<triple>/release/bundle
   Get-ChildItem $targetDir -Directory | ForEach-Object {
-    $b = Join-Path $_.FullName 'release' 'bundle'
+    $b = Join-Path (Join-Path $_.FullName 'release') 'bundle'
     if (Test-Path $b) { $bundleDirs += $b }
   }
 }
@@ -179,7 +179,7 @@ foreach ($triple in $linuxTriples) {
   if (-not $tmpBase) { $tmpBase = Join-Path $releaseDir "_tmp-$triple" }
 
   # Put tar.gz archives into the bundle directory so tauri-action picks them up.
-  $outDir = Join-Path $targetDir $triple 'release' 'bundle'
+  $outDir = Join-Path (Join-Path (Join-Path $targetDir $triple) 'release') 'bundle'
   if (-not (Test-Path $outDir)) { New-Item -ItemType Directory -Path $outDir -Force | Out-Null }
 
   # Plain archive: just the binary.

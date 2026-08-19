@@ -317,6 +317,13 @@ jobs:
             echo "::warning::At least one Apple signing secret is missing — macOS bundle will be ad-hoc signed only (no notarization). Downstream users will need to right-click → Open the .app on first launch, or run `xattr -rd com.apple.quarantine /path/to/DeepSeek Harness.app`."
           fi
 
+      # Sync the package.json version into tauri.conf.json BEFORE building so
+      # the emitted bundles carry the correct version. (PowerShell 5.1 on the
+      # Windows runner only supports two-arg Join-Path; the script is written
+      # to be compatible.)
+      - name: Sync version into tauri.conf.json
+        run: npm run prebuild
+
       # macOS + all Apple secrets present: full signing + notarization.
       - name: Build & publish release (signed + notarized)
         if: steps.apple-creds.outputs.has_creds == 'true'
@@ -335,7 +342,6 @@ jobs:
           # Set to false for fully automatic (continuous) delivery.
           releaseDraft: true
           prerelease: false
-          tauriScript: npm run build
           args: --target ${{ matrix.target }}
 
       # Every other platform (Windows/Linux) and macOS without Apple secrets:
@@ -354,5 +360,11 @@ jobs:
           # Set to false for fully automatic (continuous) delivery.
           releaseDraft: true
           prerelease: false
-          tauriScript: npm run build
           args: --target ${{ matrix.target }}
+
+      # Rename the freshly built bundles into the canonical
+      # {Name}-{Version}-{OS}-{Arch}[-{Variant}].{ext} scheme AFTER the build so
+      # the GitHub Release assets match the documented naming convention.
+      - name: Rename bundles to canonical asset names
+        if: success()
+        run: npm run postbuild
