@@ -329,12 +329,13 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         with:
           tagName: ${{ github.ref_name }}
-          releaseName: "DeepSeek_Harness_Launcher ${{ github.ref_name }}"
+          releaseName: "DeepSeek-Harness-Launcher ${{ github.ref_name }}"
           releaseBody: "See the assets below for your platform."
           # Draft by default so you can review the artifacts before publishing.
           # Set to false for fully automatic (continuous) delivery.
           releaseDraft: true
           prerelease: false
+          tauriScript: npm run build
           args: --target ${{ matrix.target }}
 
       # Every other platform (Windows/Linux) and macOS without Apple secrets:
@@ -347,10 +348,11 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           tagName: ${{ github.ref_name }}
-          releaseName: "DeepSeek_Harness_Launcher ${{ github.ref_name }}"
+          releaseName: "DeepSeek-Harness-Launcher ${{ github.ref_name }}"
           releaseBody: "See the assets below for your platform."
           # Draft by default so you can review the artifacts before publishing.
           # Set to false for fully automatic (continuous) delivery.
           releaseDraft: true
           prerelease: false
+          tauriScript: npm run build
           args: --target ${{ matrix.target }}
