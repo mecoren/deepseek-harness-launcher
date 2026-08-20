@@ -229,9 +229,12 @@ fn run_npm(
 
 /// Query the latest published version from the registry.
 fn latest_version(dir: &std::path::Path, timeout: Duration) -> Result<String, String> {
-    let (status, stdout, stderr) =
-        run_npm(dir, &["view", "@deepseek-ai/dsh", "version", "--silent"], timeout)
-            .map_err(|e| format!("npm view 失败: {e}"))?;
+    let (status, stdout, stderr) = run_npm(
+        dir,
+        &["view", "@deepseek-ai/dsh", "version", "--silent"],
+        timeout,
+    )
+    .map_err(|e| format!("npm view 失败: {e}"))?;
     if !status.success() {
         let detail = if !stderr.is_empty() { stderr } else { stdout };
         return Err(format!("查询最新版本失败: {detail}"));
