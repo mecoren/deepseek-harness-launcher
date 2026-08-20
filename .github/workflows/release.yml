@@ -362,9 +362,16 @@ jobs:
       # Working directory is `src-tauri` (matches what tauri-action does by
       # default). The build step is `Build-only` — release publication is
       # handled by the dedicated `release` job below.
+      #
+      # `shell: bash` is REQUIRED here: the run block uses bashisms
+      # (`set -euxo pipefail`, `tee`, `ls -laR`). On Windows runners the
+      # default shell is PowerShell, where `set` is `Set-Variable` and the
+      # step dies instantly with "A parameter cannot be found that matches
+      # parameter name 'euxo'".
       - name: Build release bundles (signed + notarized)
         if: steps.apple-creds.outputs.has_creds == 'true'
         working-directory: src-tauri
+        shell: bash
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
@@ -384,6 +391,7 @@ jobs:
       - name: Build release bundles
         if: steps.apple-creds.outputs.has_creds != 'true'
         working-directory: src-tauri
+        shell: bash
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -422,12 +430,20 @@ jobs:
       # artifacts; the `release` job below downloads all six platforms' bundles
       # and publishes them in ONE action-gh-release call.
       #
-      # `if-no-files-found: error` (NOT warn) is critical: v0.1.18 → v0.1.22
+      # `if-no-files-found: error` (NOT warn) is critical: v0.1.18 → v0.1.23
       # all shipped with empty releases because this step silently warned
-      # when bundle was empty. The whole workflow then "succeeded" with zero
-      # assets and nobody noticed. With `error` here, the matrix job FAILS
-      # the moment bundle/ is empty — we get an actual red build instead of a
+      # when its globs matched nothing. The whole workflow then "succeeded"
+      # with zero assets and nobody noticed. With `error` here, the matrix job
+      # FAILS the moment no artifacts are found — a red build instead of a
       # quietly broken release.
+      #
+      # The `**/` is the real fix: Tauri 2 writes bundles under
+      # `bundle/<format>/` SUBDIRECTORIES (bundle/msi/, bundle/nsis/,
+      # bundle/deb/, bundle/rpm/, bundle/dmg/, bundle/macos/), not directly
+      # in bundle/. The old `bundle/*.msi` globs only matched the direct
+      # level, so they could NEVER match the actual products even though
+      # `tauri build` had succeeded — that mismatch silently dropped every
+      # release asset since v0.1.18.
       - name: Upload build artifacts
         if: success()
         uses: actions/upload-artifact@v4
@@ -435,13 +451,13 @@ jobs:
           name: release-${{ matrix.target }}
           if-no-files-found: error
           path: |
-            src-tauri/target/**/release/bundle/*.msi
-            src-tauri/target/**/release/bundle/*.exe
-            src-tauri/target/**/release/bundle/*.deb
-            src-tauri/target/**/release/bundle/*.rpm
-            src-tauri/target/**/release/bundle/*.dmg
-            src-tauri/target/**/release/bundle/*.tar.gz
-            src-tauri/target/**/release/bundle/*.app.zip
+            src-tauri/target/**/release/bundle/**/*.msi
+            src-tauri/target/**/release/bundle/**/*.exe
+            src-tauri/target/**/release/bundle/**/*.deb
+            src-tauri/target/**/release/bundle/**/*.rpm
+            src-tauri/target/**/release/bundle/**/*.dmg
+            src-tauri/target/**/release/bundle/**/*.tar.gz
+            src-tauri/target/**/release/bundle/**/*.app.zip
 
   # Publish in a single, dedicated job. Every matrix job used to call
   # action-gh-release in parallel, and each call wipes the release's existing
