@@ -337,34 +337,44 @@ jobs:
         run: npm run prebuild
 
       # macOS + all Apple secrets present: full signing + notarization.
-      # NOTE: no tagName/releaseName/releaseId → tauri-action only BUILDS and
-      # skips creating/uploading the GitHub release. The upload happens in the
-      # "Publish release assets" step AFTER postbuild renames the bundles, so
-      # the release assets carry the canonical {Name}-{Version}-{OS}-{Arch}
-      # naming instead of tauri-action's raw `tauri build` output names.
+      #
+      # NOTE: we invoke `tauri build` directly via `npx tauri` rather than the
+      # `tauri-apps/tauri-action@v0` wrapper. The v0 wrapper was observed to
+      # exit 0 with an empty `bundle/` directory across all six matrix jobs
+      # (v0.1.20 run: every `Build release bundles` step reported success but
+      # produced no installers, leaving the release with no assets). Calling
+      # tauri CLI directly makes the exit code authoritative — any bundle
+      # failure now fails the matrix job instead of being silently swallowed
+      # by the wrapper's `retry()` helper. `--bundles all` overrides
+      # `tauri.conf.json`'s `bundle.targets` so we always emit the full set
+      # regardless of OS.
+      #
+      # Working directory is `src-tauri` (matches what tauri-action does by
+      # default). The build step is `Build-only` — release publication is
+      # handled by the dedicated `release` job below.
       - name: Build release bundles (signed + notarized)
         if: steps.apple-creds.outputs.has_creds == 'true'
-        uses: tauri-apps/tauri-action@v0
+        working-directory: src-tauri
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-        with:
-          args: --target ${{ matrix.target }}
+        run: |
+          npx tauri build --target ${{ matrix.target }} --bundles all
 
       # Every other platform (Windows/Linux) and macOS without Apple secrets:
       # no APPLE_* env at all, so tauri-cli falls back to the config identity
       # (tauri.conf.json signingIdentity "-" → ad-hoc) and skips notarization.
-      # Build-only (no tagName/releaseName), same as the step above.
+      # Same rationale as the signed step above for using `npx tauri` directly.
       - name: Build release bundles
         if: steps.apple-creds.outputs.has_creds != 'true'
-        uses: tauri-apps/tauri-action@v0
+        working-directory: src-tauri
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          args: --target ${{ matrix.target }}
+        run: |
+          npx tauri build --target ${{ matrix.target }} --bundles all
 
       # Rename the freshly built bundles into the canonical
       # {Name}-{Version}-{OS}-{Arch}[-{Variant}].{ext} scheme AFTER the build so
@@ -373,6 +383,22 @@ jobs:
       - name: Rename bundles to canonical asset names
         if: success()
         run: npm run postbuild
+
+      # Diagnostic: print exactly what the build produced so a future
+      # "missing bundle" regression is obvious from the run log. Always runs
+      # (even on failure) so the output is visible when things go wrong.
+      - name: Inspect bundle output
+        if: always()
+        shell: bash
+        run: |
+          echo "=== bundle directories ==="
+          find src-tauri/target -type d -name bundle 2>&1 || true
+          echo ""
+          echo "=== bundle files ==="
+          find src-tauri/target -path '*/release/bundle/*' -type f 2>&1 || true
+          echo ""
+          echo "=== tauri.conf.json bundle.targets ==="
+          node -e "console.log(JSON.parse(require('fs').readFileSync('src-tauri/tauri.conf.json','utf8')).bundle.targets)"
 
       # Upload AFTER renaming — tauri-action uploads the raw `tauri build`
       # output before postbuild can rename it, which is why past releases kept
