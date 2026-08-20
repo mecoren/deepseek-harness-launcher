@@ -80,38 +80,49 @@ jobs:
           #   - windows-2022 (x64 hardware) packing the win-arm64 node
           # A mismatched bundle then fails `dsh web` boot with
           # "Cannot find the native Koffi module; did you bundle it correctly?"
+          # bundles: tauri CLI validates --bundles values per-host-platform
+          # (macOS only accepts `ios,app,dmg`; Linux `deb,rpm,appimage,...`;
+          # Windows `nsis,msi`), so each matrix entry pins the types its
+          # runner can actually produce. Kept in sync with tauri.conf.json's
+          # bundle.targets.
           - platform: windows-2022
             target: x86_64-pc-windows-msvc
+            bundles: nsis,msi
             node-dist: win-x64
             node-bin: node.exe
             npm-os: win32
             npm-cpu: x64
           - platform: windows-2022
             target: aarch64-pc-windows-msvc
+            bundles: nsis,msi
             node-dist: win-arm64
             node-bin: node.exe
             npm-os: win32
             npm-cpu: arm64
           - platform: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
+            bundles: deb,rpm
             node-dist: linux-x64
             node-bin: node
             npm-os: linux
             npm-cpu: x64
           - platform: ubuntu-22.04-arm
             target: aarch64-unknown-linux-gnu
+            bundles: deb,rpm
             node-dist: linux-arm64
             node-bin: node
             npm-os: linux
             npm-cpu: arm64
           - platform: macos-latest
             target: x86_64-apple-darwin
+            bundles: app,dmg
             node-dist: darwin-x64
             node-bin: node
             npm-os: darwin
             npm-cpu: x64
           - platform: macos-latest
             target: aarch64-apple-darwin
+            bundles: app,dmg
             node-dist: darwin-arm64
             node-bin: node
             npm-os: darwin
@@ -345,9 +356,8 @@ jobs:
       # produced no installers, leaving the release with no assets). Calling
       # tauri CLI directly makes the exit code authoritative — any bundle
       # failure now fails the matrix job instead of being silently swallowed
-      # by the wrapper's `retry()` helper. `--bundles all` overrides
-      # `tauri.conf.json`'s `bundle.targets` so we always emit the full set
-      # regardless of OS.
+      # by the wrapper's `retry()` helper. `--bundles ${{ matrix.bundles }}`
+      # pins the types each runner can emit (see the matrix note).
       #
       # Working directory is `src-tauri` (matches what tauri-action does by
       # default). The build step is `Build-only` — release publication is
@@ -362,7 +372,7 @@ jobs:
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
-          npx tauri build --target ${{ matrix.target }} --bundles all
+          npx tauri build --target ${{ matrix.target }} --bundles ${{ matrix.bundles }}
 
       # Every other platform (Windows/Linux) and macOS without Apple secrets:
       # no APPLE_* env at all, so tauri-cli falls back to the config identity
@@ -374,7 +384,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          npx tauri build --target ${{ matrix.target }} --bundles all
+          npx tauri build --target ${{ matrix.target }} --bundles ${{ matrix.bundles }}
 
       # Rename the freshly built bundles into the canonical
       # {Name}-{Version}-{OS}-{Arch}[-{Variant}].{ext} scheme AFTER the build so
