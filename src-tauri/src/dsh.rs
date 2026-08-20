@@ -177,6 +177,42 @@ fn run_command_with_timeout(
     Ok((output.status, stdout, stderr))
 }
 
+/// Locate the bundled pnpm entry script inside `runtime-host`.
+///
+/// pnpm ≥ 11 ships its entry as ESM (`node_modules/pnpm/bin/pnpm.mjs`), while
+/// older majors used `bin/pnpm.cjs`. Some bundlers additionally drop the
+/// top-level `pnpm` symlink but keep the real files under pnpm's virtual store
+/// (`node_modules/.pnpm/pnpm@*/node_modules/pnpm/bin/`), so we fall back to
+/// scanning that store too. Returns the first entry that actually exists.
+fn find_pnpm_script(dir: &std::path::Path) -> Option<std::path::PathBuf> {
+    const ENTRIES: [&str; 3] = ["pnpm.mjs", "pnpm.cjs", "pnpm.js"];
+    let mut candidates: Vec<std::path::PathBuf> = Vec::new();
+
+    let top = dir.join("node_modules").join("pnpm").join("bin");
+    for name in ENTRIES {
+        candidates.push(top.join(name));
+    }
+
+    if let Ok(entries) = std::fs::read_dir(dir.join("node_modules").join(".pnpm")) {
+        let mut stores: Vec<std::path::PathBuf> = entries
+            .flatten()
+            .filter_map(|e| {
+                let name = e.file_name().to_string_lossy().to_string();
+                name.strip_prefix("pnpm@").map(|_| e.path())
+            })
+            .collect();
+        stores.sort();
+        for store in stores {
+            let base = store.join("node_modules").join("pnpm").join("bin");
+            for name in ENTRIES {
+                candidates.push(base.join(name));
+            }
+        }
+    }
+
+    candidates.into_iter().find(|p| p.exists())
+}
+
 /// Run the bundled `pnpm` (located inside `runtime-host`) using the bundled
 /// Node binary. This makes the updater self-contained on every platform — it
 /// does NOT rely on any Node/npm installed on the end user's machine.
@@ -191,11 +227,11 @@ fn run_pnpm(
     timeout: Duration,
 ) -> Result<(std::process::ExitStatus, String, String), String> {
     let node = dir.join(node_bin_name());
-    let pnpm = dir
-        .join("node_modules")
-        .join("pnpm")
-        .join("bin")
-        .join("pnpm.cjs");
+    let pnpm = find_pnpm_script(dir).ok_or_else(|| {
+        "runtime-host 内未找到自带的 pnpm（node_modules/pnpm/bin/pnpm.mjs 或 pnpm.cjs）。\
+         请重新生成离线包后重试：cd runtime-host && npm install"
+            .to_string()
+    })?;
     let node_s = node.to_string_lossy().to_string();
     let pnpm_s = pnpm.to_string_lossy().to_string();
     let mut all: Vec<String> = vec![pnpm_s];
@@ -224,9 +260,19 @@ fn latest_version(dir: &std::path::Path, timeout: Duration) -> Result<String, St
 
 /// Install the latest `@deepseek-ai/dsh` package into `runtime-host`.
 fn install_latest(dir: &std::path::Path, timeout: Duration) -> Result<(), String> {
-    let (status, stdout, stderr) =
-        run_pnpm(dir, &["add", "@deepseek-ai/dsh", "--save-exact"], timeout)
-            .map_err(|e| format!("pnpm add 失败: {e}"))?;
+    let (status, stdout, stderr) = run_pnpm(
+        dir,
+        &[
+            "add",
+            "@deepseek-ai/dsh",
+            "--save-exact",
+            // Keep the flat `node_modules/@deepseek-ai/dsh` layout the offline
+            // launcher expects even if `.npmrc` is missing on disk.
+            "--config.node-linker=hoisted",
+        ],
+        timeout,
+    )
+    .map_err(|e| format!("pnpm add 失败: {e}"))?;
     if status.success() {
         Ok(())
     } else {
