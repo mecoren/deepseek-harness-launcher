@@ -9,8 +9,13 @@ name: Release
 #      (build-only; no tagName/releaseName, so it never uploads),
 #   3. renames the bundles to the canonical
 #      {Name}-{Version}-{OS}-{Arch}[-{Variant}].{ext} scheme (postbuild),
-#   4. uploads the renamed assets to the GitHub release via
-#      `softprops/action-gh-release` (which also creates the release).
+#   4. uploads the renamed bundles as workflow artifacts, then a separate
+#      `release` job downloads all six platforms' bundles and publishes them
+#      in ONE `softprops/action-gh-release` call (which also creates the
+#      release). Publishing must happen exactly once, from a single job:
+#      action-gh-release wipes a release's existing assets before attaching
+#      its files, so letting every matrix job publish in parallel made them
+#      delete each other's bundles (v0.1.18/v0.1.19 shipped with no assets).
 #      Uploading AFTER the rename is what makes the GitHub asset names match
 #      the documented convention (e.g.
 #      `DeepSeek Harness Launcher-0.1.15-Windows-Amd64-Installer.exe`).
@@ -371,18 +376,16 @@ jobs:
 
       # Upload AFTER renaming — tauri-action uploads the raw `tauri build`
       # output before postbuild can rename it, which is why past releases kept
-      # Tauri's default asset names. Here each matrix job uploads its own
-      # platform's renamed bundles into the same tag release.
-      - name: Publish release assets
+      # Tauri's default asset names. Upload the renamed bundles as workflow
+      # artifacts; the `release` job below downloads all six platforms' bundles
+      # and publishes them in ONE action-gh-release call.
+      - name: Upload build artifacts
         if: success()
-        uses: softprops/action-gh-release@v2
+        uses: actions/upload-artifact@v4
         with:
-          tag_name: ${{ github.ref_name }}
-          name: "DeepSeek Harness Launcher ${{ github.ref_name }}"
-          body: "See the assets below for your platform."
-          draft: false
-          prerelease: false
-          files: |
+          name: release-${{ matrix.target }}
+          if-no-files-found: warn
+          path: |
             src-tauri/target/**/release/bundle/*.msi
             src-tauri/target/**/release/bundle/*.exe
             src-tauri/target/**/release/bundle/*.deb
@@ -390,4 +393,35 @@ jobs:
             src-tauri/target/**/release/bundle/*.dmg
             src-tauri/target/**/release/bundle/*.tar.gz
             src-tauri/target/**/release/bundle/*.app.zip
+
+  # Publish in a single, dedicated job. Every matrix job used to call
+  # action-gh-release in parallel, and each call wipes the release's existing
+  # assets before attaching its own files — so the six jobs kept deleting each
+  # other's bundles and the release shipped with zero artifacts (v0.1.18 /
+  # v0.1.19). Running after `build` finishes lets this one job collect ALL
+  # platforms' renamed bundles and upload them together.
+  release:
+    name: Publish release assets
+    needs: build
+    # Runs even when some matrix builds failed, so the platforms that DID
+    # succeed still get published (same resilience as the old per-job flow).
+    if: always()
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          merge-multiple: true
+          path: release-assets
+
+      - name: Publish release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: "DeepSeek Harness Launcher ${{ github.ref_name }}"
+          body: "See the assets below for your platform."
+          draft: false
+          prerelease: false
+          files: release-assets/**
           fail_on_unmatched_files: false
