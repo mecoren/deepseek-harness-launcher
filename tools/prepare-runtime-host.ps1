@@ -1,19 +1,23 @@
 # tools/prepare-runtime-host.ps1
 #
-# 一键重建 runtime-host 离线包（真实 node.exe + 扁平 node_modules）。
+# 一键重建 runtime-host 离线包（真实 node.exe + 扁平 node_modules + 独立 npm CLI）。
 #
 # 为什么需要这个脚本：
-#   1. node.exe / node_modules 被 .gitignore 忽略，克隆后需要本地重建；
+#   1. node.exe / node_modules / tools 被 .gitignore 忽略，克隆后需要本地重建；
 #   2. 必须使用 **npm**（扁平、无符号链接）安装依赖——若用 pnpm 默认的
 #      symlink 布局（`.pnpm` 虚拟 store + 顶层符号链接），Tauri 打包复制
 #      resources 时符号链接会丢失，导致安装后
 #      `node_modules/pnpm`、`node_modules/@deepseek-ai/dsh` 缺失，
 #      更新功能与离线启动同时失效（见 INSTALL.md 排错）；
-#   3. nvmd / nvm 的 bin 目录里的 `node.exe` 是几 MB 的版本管理 shim，
+#   3. 更新器使用 **独立安装的 npm**（tools/npm），位于 @deepseek-ai/dsh
+#      依赖图之外：`npm install` 不会重写/删除 npm 工具自身。此前把 pnpm
+#      作为 package.json 依赖捆绑时，pnpm add 会重建整个 node_modules 布局
+#      并重装自身，在 Windows 上极易失败，导致「更新后 pnpm 消失、版本不变」；
+#   4. nvmd / nvm 的 bin 目录里的 `node.exe` 是几 MB 的版本管理 shim，
 #      不是真实 Node（真实 Node 约 80+ MB），单独复制后运行会报
 #      `0xC0000135`（DLL 缺失）。脚本会校验并自动从 nvmd 的 versions
 #      目录挑选 ≥ 22.16 的最新版本；
-#   4. npm 11 默认拦截依赖的 install 脚本（allow-scripts 机制），脚本会
+#   5. npm 11 默认拦截依赖的 install 脚本（allow-scripts 机制），脚本会
 #      `npm approve-scripts --allow-scripts-pending` 批准并 `npm rebuild`
 #      生成 koffi / node-pty / dsh-subprocess-local 等原生模块。
 #
@@ -25,7 +29,8 @@
 # 完成后执行 `npm run build` 重新打包。
 
 param(
-    [string]$NodeExe = ""
+    [string]$NodeExe = "",
+    [string]$NpmVersion = "11.17.0"
 )
 
 $ErrorActionPreference = 'Stop'
@@ -73,7 +78,7 @@ if (-not $node) {
 }
 
 Write-Host "==> 清理旧离线包（删除损坏的符号链接布局）" -ForegroundColor Cyan
-foreach ($p in @('node_modules', 'node.exe', 'pnpm-lock.yaml')) {
+foreach ($p in @('node_modules', 'tools', 'node.exe')) {
     $target = Join-Path $runtimeHost $p
     if (Test-Path $target) {
         try {
@@ -110,6 +115,11 @@ try {
     } else {
         Write-Host "    npm 不支持 approve-scripts（旧版本），跳过原生模块重建" -ForegroundColor Yellow
     }
+
+    # 独立安装 npm CLI 到 tools/npm（不在 @deepseek-ai/dsh 依赖图内，更新时不会被重写）
+    Write-Host "==> 安装独立 npm CLI 到 tools/npm（v$NpmVersion）" -ForegroundColor Cyan
+    npm install "npm@$NpmVersion" --prefix tools/npm --no-audit --no-fund --loglevel=error
+    if ($LASTEXITCODE -ne 0) { throw "安装独立 npm 失败（exit=$LASTEXITCODE）" }
 } finally {
     Pop-Location
 }
@@ -117,8 +127,7 @@ try {
 Write-Host "==> 校验离线包" -ForegroundColor Cyan
 $node = Join-Path $runtimeHost 'node.exe'
 $cli  = Join-Path $runtimeHost 'node_modules\@deepseek-ai\dsh\lib\bin.js'
-$pnpm = Join-Path $runtimeHost 'node_modules\pnpm\bin\pnpm.mjs'
-if (-not (Test-Path $pnpm)) { $pnpm = Join-Path $runtimeHost 'node_modules\pnpm\bin\pnpm.cjs' }
+$npm  = Join-Path $runtimeHost 'tools\npm\node_modules\npm\bin\npm-cli.js'
 
 if (Test-Path $cli) {
     Write-Host -NoNewline "    [OK] @deepseek-ai/dsh 离线 CLI 版本: "
@@ -127,11 +136,11 @@ if (Test-Path $cli) {
     Write-Host "    [WARN] node_modules/@deepseek-ai/dsh/lib/bin.js 未找到，离线启动将回退 npx" -ForegroundColor Yellow
 }
 
-if (Test-Path $pnpm) {
-    Write-Host -NoNewline "    [OK] pnpm 版本: "
-    & $node $pnpm --version
+if (Test-Path $npm) {
+    Write-Host -NoNewline "    [OK] 独立 npm CLI 版本: "
+    & $node $npm --version
 } else {
-    Write-Host "    [WARN] node_modules/pnpm/bin/ 下未找到 pnpm 入口（pnpm.mjs / pnpm.cjs）" -ForegroundColor Yellow
+    Write-Host "    [WARN] tools/npm 下未找到 npm CLI（tools/npm/node_modules/npm/bin/npm-cli.js），更新功能不可用" -ForegroundColor Yellow
 }
 
 Write-Host ""

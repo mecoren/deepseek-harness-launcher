@@ -177,64 +177,49 @@ fn run_command_with_timeout(
     Ok((output.status, stdout, stderr))
 }
 
-/// Locate the bundled pnpm entry script inside `runtime-host`.
+/// Locate the bundled npm CLI entry inside `runtime-host`.
 ///
-/// pnpm ≥ 11 ships its entry as ESM (`node_modules/pnpm/bin/pnpm.mjs`), while
-/// older majors used `bin/pnpm.cjs`. Some bundlers additionally drop the
-/// top-level `pnpm` symlink but keep the real files under pnpm's virtual store
-/// (`node_modules/.pnpm/pnpm@*/node_modules/pnpm/bin/`), so we fall back to
-/// scanning that store too. Returns the first entry that actually exists.
-fn find_pnpm_script(dir: &std::path::Path) -> Option<std::path::PathBuf> {
-    const ENTRIES: [&str; 3] = ["pnpm.mjs", "pnpm.cjs", "pnpm.js"];
-    let mut candidates: Vec<std::path::PathBuf> = Vec::new();
-
-    let top = dir.join("node_modules").join("pnpm").join("bin");
-    for name in ENTRIES {
-        candidates.push(top.join(name));
-    }
-
-    if let Ok(entries) = std::fs::read_dir(dir.join("node_modules").join(".pnpm")) {
-        let mut stores: Vec<std::path::PathBuf> = entries
-            .flatten()
-            .filter_map(|e| {
-                let name = e.file_name().to_string_lossy().to_string();
-                name.strip_prefix("pnpm@").map(|_| e.path())
-            })
-            .collect();
-        stores.sort();
-        for store in stores {
-            let base = store.join("node_modules").join("pnpm").join("bin");
-            for name in ENTRIES {
-                candidates.push(base.join(name));
-            }
-        }
-    }
-
+/// npm is installed as a standalone package under `runtime-host/tools/npm`
+/// (`npm install npm@<ver> --prefix tools/npm`), so it is *outside* the
+/// `@deepseek-ai/dsh` dependency graph — running `npm install` never touches
+/// the tool directory. (Bundling pnpm inside the same `node_modules` instead
+/// proved fragile: pnpm would rebuild/relink itself during `pnpm add`,
+/// corrupting its own entry and leaving the package at the old version.)
+/// Falls back to the flat `node_modules/npm/bin/npm-cli.js` layout for older
+/// bundles.
+fn find_npm_cli(dir: &std::path::Path) -> Option<std::path::PathBuf> {
+    let candidates: Vec<std::path::PathBuf> = vec![
+        dir.join("tools")
+            .join("npm")
+            .join("node_modules")
+            .join("npm")
+            .join("bin")
+            .join("npm-cli.js"),
+        dir.join("node_modules")
+            .join("npm")
+            .join("bin")
+            .join("npm-cli.js"),
+    ];
     candidates.into_iter().find(|p| p.exists())
 }
 
-/// Run the bundled `pnpm` (located inside `runtime-host`) using the bundled
+/// Run the bundled `npm` (located inside `runtime-host`) using the bundled
 /// Node binary. This makes the updater self-contained on every platform — it
 /// does NOT rely on any Node/npm installed on the end user's machine.
-///
-/// `runtime-host/.npmrc` sets `node-linker=hoisted` so pnpm keeps the flat
-/// `node_modules/@deepseek-ai/dsh/lib/bin.js` layout that `spawn_dsh_web`
-/// expects (instead of pnpm's default symlinked layout, which breaks once the
-/// bundle is copied/installed on another machine).
-fn run_pnpm(
+fn run_npm(
     dir: &std::path::Path,
     args: &[&str],
     timeout: Duration,
 ) -> Result<(std::process::ExitStatus, String, String), String> {
     let node = dir.join(node_bin_name());
-    let pnpm = find_pnpm_script(dir).ok_or_else(|| {
-        "runtime-host 内未找到自带的 pnpm（node_modules/pnpm/bin/pnpm.mjs 或 pnpm.cjs）。\
-         请重新生成离线包后重试：cd runtime-host && npm install"
+    let npm = find_npm_cli(dir).ok_or_else(|| {
+        "runtime-host 内未找到自带的 npm（tools/npm/node_modules/npm/bin/npm-cli.js）。\
+         请重新生成离线包后重试：cd runtime-host && npm install && npm install npm@11 --prefix tools/npm"
             .to_string()
     })?;
     let node_s = node.to_string_lossy().to_string();
-    let pnpm_s = pnpm.to_string_lossy().to_string();
-    let mut all: Vec<String> = vec![pnpm_s];
+    let npm_s = npm.to_string_lossy().to_string();
+    let mut all: Vec<String> = vec![npm_s];
     for a in args {
         all.push(a.to_string());
     }
@@ -244,8 +229,9 @@ fn run_pnpm(
 
 /// Query the latest published version from the registry.
 fn latest_version(dir: &std::path::Path, timeout: Duration) -> Result<String, String> {
-    let (status, stdout, stderr) = run_pnpm(dir, &["info", "@deepseek-ai/dsh", "version"], timeout)
-        .map_err(|e| format!("pnpm info 失败: {e}"))?;
+    let (status, stdout, stderr) =
+        run_npm(dir, &["view", "@deepseek-ai/dsh", "version", "--silent"], timeout)
+            .map_err(|e| format!("npm view 失败: {e}"))?;
     if !status.success() {
         let detail = if !stderr.is_empty() { stderr } else { stdout };
         return Err(format!("查询最新版本失败: {detail}"));
@@ -259,20 +245,25 @@ fn latest_version(dir: &std::path::Path, timeout: Duration) -> Result<String, St
 }
 
 /// Install the latest `@deepseek-ai/dsh` package into `runtime-host`.
+///
+/// npm keeps the flat `node_modules/@deepseek-ai/dsh/lib/bin.js` layout that
+/// `spawn_dsh_web` expects and updates `package.json` / `package-lock.json`
+/// (which are npm-native), so the install never restructures `node_modules`
+/// the way a pnpm layout migration would.
 fn install_latest(dir: &std::path::Path, timeout: Duration) -> Result<(), String> {
-    let (status, stdout, stderr) = run_pnpm(
+    let (status, stdout, stderr) = run_npm(
         dir,
         &[
-            "add",
-            "@deepseek-ai/dsh",
+            "install",
+            "@deepseek-ai/dsh@latest",
             "--save-exact",
-            // Keep the flat `node_modules/@deepseek-ai/dsh` layout the offline
-            // launcher expects even if `.npmrc` is missing on disk.
-            "--config.node-linker=hoisted",
+            "--no-audit",
+            "--no-fund",
+            "--loglevel=error",
         ],
         timeout,
     )
-    .map_err(|e| format!("pnpm add 失败: {e}"))?;
+    .map_err(|e| format!("npm install 失败: {e}"))?;
     if status.success() {
         Ok(())
     } else {

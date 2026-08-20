@@ -15,6 +15,7 @@ legacy-wry/
 /node_modules
 runtime-host/node.exe
 runtime-host/node_modules/
+runtime-host/tools/
 runtime-host/.pnpm/
 runtime-host/.npm-cache/
 

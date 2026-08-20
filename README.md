@@ -22,7 +22,7 @@ DeepSeek 官方提供的 `dsh web` 是一个命令行启动的本地网页工作
 - 用 Tauri 2 提供一个原生窗口（自定义注入标题栏，去掉了系统边框）；
 - 启动后自动在后台拉起 `dsh web`（loopback 随机端口），主窗口直接导航过去；
 - 把 Node 运行环境和 `dsh` CLI **打包进应用内部**（`runtime-host/`），首次运行免联网；
-- 更新功能改用应用**自带的 pnpm**，不再调用用户机器上的 npm，所以最终用户也不用装 npm。
+- 更新功能改用应用**自带的 npm CLI**（独立安装在 `runtime-host/tools/npm`），不再调用用户机器上的 npm，所以最终用户也不用装 npm。
 
 一句话：**让 `dsh web` 从“一条命令”变成“一个双击就开的桌面程序”。**
 
@@ -38,11 +38,11 @@ DeepSeek 官方提供的 `dsh web` 是一个命令行启动的本地网页工作
 - **托盘常驻**：关闭窗口 **只隐藏**，进程继续驻留系统托盘（黑鲸图标）；
   只有托盘菜单的「退出」才真正结束进程，并在退出时强杀 `dsh web` 进程树。
 - **离线运行**：优先使用内置 `runtime-host/`（随包发布的 Node 可执行文件 +
-  `@deepseek-ai/dsh` CLI + 自带 pnpm），**首次运行完全免联网**。
-- **自带更新器**：通过 `runtime-host/node.exe node_modules/pnpm/bin/pnpm.mjs`
-  （pnpm ≥ 11 入口为 `.mjs`，代码自动兼容 ≤ 10 的 `pnpm.cjs`）执行
-  `pnpm info` / `pnpm add` 检查并安装新版，只需能访问 npm registry，
-  **不依赖用户机器上的 Node / npm / pnpm**。
+  `@deepseek-ai/dsh` CLI + 独立 npm CLI），**首次运行完全免联网**。
+- **自带更新器**：通过 `runtime-host/node.exe tools/npm/node_modules/npm/bin/npm-cli.js`
+  执行 `npm view` / `npm install` 检查并安装新版，只需能访问 npm registry，
+  **不依赖用户机器上的 Node / npm / pnpm**。独立 npm 装在 dsh 依赖图之外，
+  `npm install` 不会破坏更新器自身（此前用 pnpm 时出现过自举损坏问题）。
 - **提示样式**：内联实现 shadcn Sonner 风格的居中 toast（顶部居中、成功绿 /
   失败红、自动消失），不引入任何外部 CDN 或前端组件依赖。
 
@@ -68,9 +68,9 @@ rustup target add x86_64-pc-windows-msvc
 
 ### 2. 准备离线 CLI 包（首次必须，否则无离线模式）
 
-`node.exe`、`node_modules`、`pnpm` 已在 `.gitignore` 中忽略，克隆仓库后需要本地重建：
+`node.exe`、`node_modules`、`tools/` 已在 `.gitignore` 中忽略，克隆仓库后需要本地重建：
 
-推荐一键脚本（复制 `node.exe` + `npm install` + 校验）：
+推荐一键脚本（复制 `node.exe` + `npm install` + 安装独立 npm + 校验）：
 
 ```powershell
 .\tools\prepare-runtime-host.ps1
@@ -83,9 +83,9 @@ rustup target add x86_64-pc-windows-msvc
 cd runtime-host
 copy <你的 Node 安装目录>\node.exe node.exe          # 复制一份 Windows Node 进来
 npm install @deepseek-ai/dsh --no-audit --no-fund   # 安装官方 CLI
-npm install pnpm --save-exact --no-audit --no-fund   # 安装自带更新器
-# 保持 .npmrc 的 node-linker=hoisted 不被删掉
-# ⚠️ 必须用 npm（扁平布局、无符号链接）；pnpm 默认 symlink 布局在打包后会丢失
+npm install npm@11.17.0 --prefix tools/npm --no-audit --no-fund   # 独立安装更新器 npm
+# ⚠️ 必须用 npm（扁平布局、无符号链接）；不要用 pnpm，其 symlink 布局打包后会丢失、
+#    且把更新器放进 dsh 依赖图会导致更新时自举损坏
 ```
 
 > 若 `runtime-host/` 缺失，应用会自动回退到 `npx -y @deepseek-ai/dsh web`
@@ -135,7 +135,7 @@ npm run build        # = tauri build（targets: "all"）
 
 ## 更多细节
 
-完整的依赖清单、离线包目录结构、pnpm 更新机制、项目结构、排错与 GitHub 元数据，
+完整的依赖清单、离线包目录结构、更新机制、项目结构、排错与 GitHub 元数据，
 见仓库内的 [`INSTALL.md`](./INSTALL.md)。
 
 ---
@@ -144,5 +144,5 @@ npm run build        # = tauri build（targets: "all"）
 
 - **Tauri 2**（Rust 后端 + WebView2 渲染）
 - 内置 **Node 22** 运行环境 + **@deepseek-ai/dsh** CLI（离线）
-- 自带 **pnpm** 更新器
+- 自带独立 **npm** 更新器（`runtime-host/tools/npm`）
 - 自定义注入式标题栏 + 内联 Sonner toast（无前端框架、无外部依赖）

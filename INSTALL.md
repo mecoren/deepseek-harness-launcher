@@ -113,10 +113,9 @@ runtime-host/
 ├── node.exe                              # 随包发布的 Node v22（约 87 MB）
 ├── node_modules/@deepseek-ai/dsh/        # 官方 @deepseek-ai/dsh 包
 │   └── lib/bin.js
-├── node_modules/pnpm/                    # 自带 pnpm 更新器（更新 dsh 用，不依赖用户机器 npm）
-│   └── bin/pnpm.mjs                      # pnpm ≥ 11 入口为 .mjs（≤ 10 为 .cjs，代码自动兼容）
-├── .npmrc                                # node-linker=hoisted：让 pnpm 保持扁平布局
-└── package.json                          # 已声明 @deepseek-ai/dsh 与 pnpm 依赖
+├── tools/npm/                            # 独立安装的 npm CLI（更新器，不在 dsh 依赖图内）
+│   └── node_modules/npm/bin/npm-cli.js   # 更新 dsh 用，不依赖用户机器上的 npm
+└── package.json                          # 已声明 @deepseek-ai/dsh 依赖
 ```
 
 ### 如需重新生成 / 刷新离线包
@@ -135,15 +134,23 @@ runtime-host/
 cd runtime-host
 # 复制一份 Windows Node 可执行文件进来
 copy <node-install>\node.exe node.exe
-# 安装官方 CLI + 自带更新器（仅首次，需要联网）
+# 安装官方 CLI（仅首次，需要联网；npm 布局天然扁平、无符号链接）
 npm install --no-audit --no-fund
+# 安装独立 npm CLI 作为更新器（tools/npm，不在 dsh 依赖图内）
+npm install npm@11.17.0 --prefix tools/npm --no-audit --no-fund
 ```
 
 > ⚠️ **必须用 `npm install`（扁平布局，无符号链接）**。若用 `pnpm install`
 > 且未让 `node-linker=hoisted` 生效，`node_modules` 会变成「`.pnpm` 虚拟 store +
 > 顶层符号链接」布局；Tauri 打包复制 resources 时符号链接会丢失，导致安装后
-> `node_modules/pnpm` 与 `node_modules/@deepseek-ai/dsh` 缺失——**更新检查报
+> 顶层 `node_modules/pnpm`、`node_modules/@deepseek-ai/dsh` 缺失——**更新检查报
 > `Cannot find module ... pnpm.cjs`**、离线启动回退 npx 都是这个原因。
+>
+> ⚠️ **更新器不能用「与 dsh 同目录的 pnpm」**：pnpm 是 `package.json` 依赖时，
+> `pnpm add` 会重建整个 `node_modules` 布局并重装自身（Windows 上极易因占用
+> 失败），造成「更新后 pnpm 消失、版本不变」。因此更新器改为
+> **独立安装的 npm**（`tools/npm`），位于 dsh 依赖图之外，`npm install`
+> 永不触碰工具目录。
 
 > ⚠️ **Node 版本必须 ≥ 22.16.0**（CI 与本地一致）。`@deepseek-ai/dsh` 的插件
 > 会导入 `node:zlib` 的 zstd API（`createZstdDecompress` 等），该 API 自
@@ -159,22 +166,24 @@ npm install --no-audit --no-fund
 若 `runtime-host/` 缺失，自动回退到 `npx -y @deepseek-ai/dsh web`
 （首次运行需联网下载一次）。
 
-### 更新走自带 pnpm（不依赖用户机器 npm）
+### 更新走自带 npm（不依赖用户机器 npm）
 
-「检查 DeepSeek Harness 更新 / 更新」功能用 `runtime-host` 内自带的
-`node.exe node_modules/pnpm/bin/pnpm.mjs` 执行（**pnpm ≥ 11 的入口脚本是
-`.mjs`**，`dsh.rs` 会自动兼容 pnpm ≤ 10 的 `pnpm.cjs`），**不再调用用户机器
-PATH 上的 npm**。因此最终用户**无需安装 Node.js / npm / pnpm** 即可更新，
-只要能联网访问 npm registry 拉取新版本即可：
+「检查 DeepSeek Harness 更新 / 更新」功能用 `runtime-host` 内**独立安装**的
+npm CLI 执行：`node.exe tools/npm/node_modules/npm/bin/npm-cli.js`。
+`dsh.rs::find_npm_cli` 自动定位该路径（兼容旧版扁平 `node_modules/npm` 布局），
+**不再调用用户机器 PATH 上的 npm**。因此最终用户**无需安装 Node.js / npm**
+即可更新，只要能联网访问 npm registry 拉取新版本即可：
 
-- 查最新版：`pnpm info @deepseek-ai/dsh version`
-- 安装更新：`pnpm add @deepseek-ai/dsh --save-exact --config.node-linker=hoisted`
-  （写入 `package.json`）
-- `runtime-host/.npmrc` 的 `node-linker=hoisted` 让 pnpm 保持扁平
-  `node_modules/@deepseek-ai/dsh` 布局，与 `dsh.rs::spawn_dsh_web` 期望的路径一致
-  （pnpm 默认 symlink 布局在打包拷贝后会失效）。
-- 重新生成离线包时也要把 pnpm 一起装好：
-  `npm install pnpm --save-exact --no-audit --no-fund`，并保持 `.npmrc` 不被删。
+- 查最新版：`npm view @deepseek-ai/dsh version --silent`
+- 安装更新：`npm install @deepseek-ai/dsh@latest --save-exact --no-audit --no-fund`
+  （写入 `package.json` 与 `package-lock.json`）
+- 独立 npm 装在 `tools/npm`，**不在 `@deepseek-ai/dsh` 依赖图内**，所以
+  `npm install` 不会触碰工具目录——彻底避免此前 pnpm 自举导致的
+  「更新后更新器消失、版本不变」问题。
+- npm 安装天然保持扁平 `node_modules/@deepseek-ai/dsh` 布局，
+  与 `dsh.rs::spawn_dsh_web` 期望的路径一致（无符号链接，打包复制不丢失）。
+- 重新生成离线包时由 `tools/prepare-runtime-host.ps1` 一键完成
+  （装 dsh + 独立 npm + 原生模块重建 + 校验）。
 
 ---
 
@@ -267,7 +276,7 @@ taskkill /IM node.exe /F        # 仅当确认是其进程时
 - [ ] 装 VS Build Tools 2022（C++ 桌面开发）
 - [ ] `rustup target add x86_64-pc-windows-msvc`
 - [ ] `runtime-host/node.exe` + `runtime-host/node_modules/@deepseek-ai/dsh/lib/bin.js` 就位
-- [ ] `runtime-host/node_modules/pnpm/bin/pnpm.mjs`（或 ≤ 10 的 `pnpm.cjs`）就位（更新走自带 pnpm）
+- [ ] `runtime-host/tools/npm/node_modules/npm/bin/npm-cli.js` 就位（更新走自带独立 npm）
 - [ ] `runtime-host/.npmrc` 含 `node-linker=hoisted`
 - [ ] `cargo build --release --target x86_64-pc-windows-msvc`
 - [ ] 双击 `.../release/deepseek_harness_launcher.exe` 验证托盘 + 导航
