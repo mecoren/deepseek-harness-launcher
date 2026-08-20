@@ -338,9 +338,9 @@ jobs:
           tagName: ${{ github.ref_name }}
           releaseName: "DeepSeek-Harness-Launcher ${{ github.ref_name }}"
           releaseBody: "See the assets below for your platform."
-          # Draft by default so you can review the artifacts before publishing.
-          # Set to false for fully automatic (continuous) delivery.
-          releaseDraft: true
+          # Publish immediately (no Draft). Flip to `releaseDraft: true` if you
+          # want to review assets before they become public.
+          releaseDraft: false
           prerelease: false
           args: --target ${{ matrix.target }}
 
@@ -356,9 +356,9 @@ jobs:
           tagName: ${{ github.ref_name }}
           releaseName: "DeepSeek-Harness-Launcher ${{ github.ref_name }}"
           releaseBody: "See the assets below for your platform."
-          # Draft by default so you can review the artifacts before publishing.
-          # Set to false for fully automatic (continuous) delivery.
-          releaseDraft: true
+          # Publish immediately (no Draft). Flip to `releaseDraft: true` if you
+          # want to review assets before they become public.
+          releaseDraft: false
           prerelease: false
           args: --target ${{ matrix.target }}
 

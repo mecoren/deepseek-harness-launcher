@@ -1,21 +1,23 @@
 // Cross-platform bundle renamer (Node, no PowerShell dependency).
 // Renames Tauri build artifacts into the canonical naming scheme:
-//   {productName}-{version}-{OS}-{Arch}[-{Variant}].{ext}
+//   {Name}-{version}-{OS}-{Arch}[-{Variant}].{ext}
 //
-//   Windows : DeepSeek-Harness-Launcher-0.1.0-Windows-Amd64-Installer.msi
-//             DeepSeek-Harness-Launcher-0.1.0-Windows-Amd64-Portable.exe
-//   Linux   : DeepSeek-Harness-Launcher-0.1.0-Linux-Amd64.deb
-//             DeepSeek-Harness-Launcher-0.1.0-Linux-Amd64.rpm
-//             DeepSeek-Harness-Launcher-0.1.0-Linux-Amd64.tar.gz
-//             DeepSeek-Harness-Launcher-0.1.0-Linux-Amd64-WebKit41.tar.gz
-//   macOS   : DeepSeek-Harness-Launcher-0.1.0-MacOS-Amd64.dmg
-//             DeepSeek-Harness-Launcher-0.1.0-MacOS-Amd64.app.zip
+//   Windows : DeepSeek Harness Launcher-0.1.0-Windows-Amd64-Installer.msi
+//             DeepSeek Harness Launcher-0.1.0-Windows-Amd64-Portable.exe
+//   Linux   : DeepSeek Harness Launcher-0.1.0-Linux-Amd64.deb
+//             DeepSeek Harness Launcher-0.1.0-Linux-Amd64.rpm
+//             DeepSeek Harness Launcher-0.1.0-Linux-Amd64.tar.gz
+//             DeepSeek Harness Launcher-0.1.0-Linux-Amd64-WebKit41.tar.gz
+//   macOS   : DeepSeek Harness Launcher-0.1.0-MacOS-Amd64.dmg
+//             DeepSeek Harness Launcher-0.1.0-MacOS-Amd64.app.zip
 //
 // Works on Windows / macOS / Linux runners. Tauri emits bundles under
 // target/{triple}/release/bundle/... (cross-compile) or target/release/bundle/...
 // (native). This script discovers every bundle dir, reads version + productName
-// dynamically from tauri.conf.json, and rewrites each installer to a hyphenated,
-// OS/arch/variant-explicit name matching the GitHub Release asset style.
+// dynamically from tauri.conf.json, and rewrites each installer to an OS/arch/
+// variant-explicit name matching the GitHub Release asset style. `productName`
+// is preserved verbatim (including spaces) — the human-readable app name
+// "DeepSeek Harness Launcher" is what users expect to see in the asset filename.
 'use strict';
 
 const fs = require('fs');
@@ -30,7 +32,10 @@ const targetDir = path.join(srcTauri, 'target');
 const conf = JSON.parse(fs.readFileSync(path.join(srcTauri, 'tauri.conf.json'), 'utf8'));
 const version = String(conf.version);
 const productName = String(conf.productName);
-const name = productName.replace(/\s+/g, '-'); // "DeepSeek Harness" -> "DeepSeek-Harness"
+// Keep the human-readable app name (with its own spacing) as the filename
+// prefix, e.g. "DeepSeek Harness Launcher-0.1.0-Windows-Amd64.msi". This is the
+// exact format users see on the GitHub Release page.
+const name = productName;
 
 const isWindows = process.platform === 'win32';
 const tmpBase = process.env.RUNNER_TEMP || path.join(targetDir, '_tmp');
