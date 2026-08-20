@@ -5,8 +5,15 @@ name: Release
 # On every `v*` tag push it, per target:
 #   1. rebuilds the offline `runtime-host` package (node + dsh + pnpm) for the
 #      matching OS/arch so the shipped bundle is fully self-contained / offline,
-#   2. builds the platform installer/archive via `tauri-apps/tauri-action`,
-#   3. uploads the artifacts to the GitHub release for the tag.
+#   2. builds the platform installer/archive via `tauri-apps/tauri-action`
+#      (build-only; no tagName/releaseName, so it never uploads),
+#   3. renames the bundles to the canonical
+#      {Name}-{Version}-{OS}-{Arch}[-{Variant}].{ext} scheme (postbuild),
+#   4. uploads the renamed assets to the GitHub release via
+#      `softprops/action-gh-release` (which also creates the release).
+#      Uploading AFTER the rename is what makes the GitHub asset names match
+#      the documented convention (e.g.
+#      `DeepSeek Harness Launcher-0.1.15-Windows-Amd64-Installer.exe`).
 #
 # Secrets needed (repository Settings -> Secrets):
 #   GITHUB_TOKEN        provided automatically; needs `contents: write` (set below)
@@ -325,7 +332,12 @@ jobs:
         run: npm run prebuild
 
       # macOS + all Apple secrets present: full signing + notarization.
-      - name: Build & publish release (signed + notarized)
+      # NOTE: no tagName/releaseName/releaseId → tauri-action only BUILDS and
+      # skips creating/uploading the GitHub release. The upload happens in the
+      # "Publish release assets" step AFTER postbuild renames the bundles, so
+      # the release assets carry the canonical {Name}-{Version}-{OS}-{Arch}
+      # naming instead of tauri-action's raw `tauri build` output names.
+      - name: Build release bundles (signed + notarized)
         if: steps.apple-creds.outputs.has_creds == 'true'
         uses: tauri-apps/tauri-action@v0
         env:
@@ -335,36 +347,47 @@ jobs:
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         with:
-          tagName: ${{ github.ref_name }}
-          releaseName: "DeepSeek-Harness-Launcher ${{ github.ref_name }}"
-          releaseBody: "See the assets below for your platform."
-          # Publish immediately (no Draft). Flip to `releaseDraft: true` if you
-          # want to review assets before they become public.
-          releaseDraft: false
-          prerelease: false
           args: --target ${{ matrix.target }}
 
       # Every other platform (Windows/Linux) and macOS without Apple secrets:
       # no APPLE_* env at all, so tauri-cli falls back to the config identity
       # (tauri.conf.json signingIdentity "-" → ad-hoc) and skips notarization.
-      - name: Build & publish release
+      # Build-only (no tagName/releaseName), same as the step above.
+      - name: Build release bundles
         if: steps.apple-creds.outputs.has_creds != 'true'
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tagName: ${{ github.ref_name }}
-          releaseName: "DeepSeek-Harness-Launcher ${{ github.ref_name }}"
-          releaseBody: "See the assets below for your platform."
-          # Publish immediately (no Draft). Flip to `releaseDraft: true` if you
-          # want to review assets before they become public.
-          releaseDraft: false
-          prerelease: false
           args: --target ${{ matrix.target }}
 
       # Rename the freshly built bundles into the canonical
       # {Name}-{Version}-{OS}-{Arch}[-{Variant}].{ext} scheme AFTER the build so
-      # the GitHub Release assets match the documented naming convention.
+      # the GitHub Release assets match the documented naming convention, e.g.
+      #   DeepSeek Harness Launcher-0.1.15-Windows-Amd64-Installer.exe
       - name: Rename bundles to canonical asset names
         if: success()
         run: npm run postbuild
+
+      # Upload AFTER renaming — tauri-action uploads the raw `tauri build`
+      # output before postbuild can rename it, which is why past releases kept
+      # Tauri's default asset names. Here each matrix job uploads its own
+      # platform's renamed bundles into the same tag release.
+      - name: Publish release assets
+        if: success()
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: "DeepSeek Harness Launcher ${{ github.ref_name }}"
+          body: "See the assets below for your platform."
+          draft: false
+          prerelease: false
+          files: |
+            src-tauri/target/**/release/bundle/*.msi
+            src-tauri/target/**/release/bundle/*.exe
+            src-tauri/target/**/release/bundle/*.deb
+            src-tauri/target/**/release/bundle/*.rpm
+            src-tauri/target/**/release/bundle/*.dmg
+            src-tauri/target/**/release/bundle/*.tar.gz
+            src-tauri/target/**/release/bundle/*.app.zip
+          fail_on_unmatched_files: false
