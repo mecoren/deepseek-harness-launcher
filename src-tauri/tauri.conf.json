@@ -7,7 +7,7 @@
     "frontendDist": "../dist",
     "devUrl": null,
     "beforeDevCommand": "",
-    "beforeBuildCommand": ""
+    "beforeBuildCommand": "node tools/verify-runtime-host.mjs"
   },
   "app": {
     "withGlobalTauri": true,
