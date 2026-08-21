@@ -3,8 +3,9 @@ name: Release
 # Continuous Delivery for this Tauri 2 app across all supported targets:
 #   Windows x64 / arm64, Linux x64 / arm64, macOS x64 / arm64.
 # On every `v*` tag push it, per target:
-#   1. rebuilds the offline `runtime-host` package (node + dsh + pnpm) for the
-#      matching OS/arch so the shipped bundle is fully self-contained / offline,
+#   1. rebuilds the offline `runtime-host` package (node + dsh + standalone
+#      npm updater in tools/npm) for the matching OS/arch so the shipped
+#      bundle is fully self-contained / offline,
 #   2. builds the platform installer/archive via `tauri-apps/tauri-action`
 #      (build-only; no tagName/releaseName, so it never uploads),
 #   3. renames the bundles to the canonical
@@ -34,7 +35,7 @@ name: Release
 #                         users will need to right-click → Open on first launch
 #                         (or `xattr -rd com.apple.quarantine ...`).
 # No Tauri updater signing key is required — this app updates itself via the
-# bundled pnpm, not Tauri's built-in updater.
+# bundled standalone npm (runtime-host/tools/npm), not Tauri's built-in updater.
 #
 # Linux build note: the `appimage` target was intentionally removed from
 # `src-tauri/tauri.conf.json`'s `bundle.targets`. linuxdeploy's deep ELF
@@ -57,6 +58,10 @@ permissions:
 env:
   CARGO_INCREMENTAL: "0"
   RUSTFLAGS: -C debuginfo=line-tables-only
+  # 独立 npm 更新器版本（装入 runtime-host/tools/npm，位于 dsh 依赖图之外）。
+  # 与 tools/prepare-runtime-host.ps1 的 $NpmVersion 默认值保持一致；
+  # 缺失时 beforeBuildCommand 门禁（tools/verify-runtime-host.mjs）会中止打包。
+  RUNTIME_NPM_VERSION: "11.17.0"
 
 jobs:
   build:
@@ -167,11 +172,12 @@ jobs:
           workspaces: "src-tauri -> src-tauri/target"
           cache-on-failure: true
 
-      # The offline package (node + @deepseek-ai/dsh + pnpm) is gitignored, so
-      # it must be recreated in CI before bundling. Without this step the bundle
-      # would ship without the runtime and fall back to `npx` (needs network on
-      # first run). Each OS/arch downloads the matching Node 22 binary, copies
-      # it into runtime-host, then `npm install` populates node_modules.
+      # The offline package (node + @deepseek-ai/dsh + standalone npm updater)
+      # is gitignored, so it must be recreated in CI before bundling. Without
+      # this step the bundle would ship without the runtime and fall back to
+      # `npx` (needs network on first run). Each OS/arch downloads the matching
+      # Node 22 binary, copies it into runtime-host, then `npm install`
+      # populates node_modules and tools/npm.
       - name: Pack offline runtime-host (Windows)
         if: startsWith(matrix.platform, 'windows')
         shell: pwsh
@@ -199,6 +205,13 @@ jobs:
           #    swapped, so no install scripts re-run and no source build is
           #    triggered by the swap.
           npm install --no-audit --no-fund --os=${{ matrix.npm-os }} --cpu=${{ matrix.npm-cpu }}
+          # 3) Standalone npm updater into tools/npm — outside the dsh
+          #    dependency graph so `npm install` updates never rewrite the
+          #    updater itself. npm itself is pure JS, so no --os/--cpu pass is
+          #    needed. Required by the beforeBuildCommand packaging gate
+          #    (tools/verify-runtime-host.mjs); without it the shipped
+          #    installer's "check for updates" is guaranteed broken.
+          npm install "npm@$env:RUNTIME_NPM_VERSION" --prefix tools/npm --no-audit --no-fund --loglevel=error
           Pop-Location
 
       - name: Pack offline runtime-host (Linux)
@@ -219,6 +232,9 @@ jobs:
           # swap, no install scripts re-run).
           (cd runtime-host && npm install --no-audit --no-fund)
           (cd runtime-host && npm install --no-audit --no-fund --os=${{ matrix.npm-os }} --cpu=${{ matrix.npm-cpu }})
+          # Standalone npm updater into tools/npm (see Windows step): pure JS,
+          # no --os/--cpu pass needed; enforced by the packaging gate.
+          (cd runtime-host && npm install "npm@${RUNTIME_NPM_VERSION}" --prefix tools/npm --no-audit --no-fund --loglevel=error)
 
       - name: Pack offline runtime-host (macOS)
         if: startsWith(matrix.platform, 'macos')
@@ -238,6 +254,9 @@ jobs:
           # swap, no install scripts re-run).
           (cd runtime-host && npm install --no-audit --no-fund)
           (cd runtime-host && npm install --no-audit --no-fund --os=${{ matrix.npm-os }} --cpu=${{ matrix.npm-cpu }})
+          # Standalone npm updater into tools/npm (see Windows step): pure JS,
+          # no --os/--cpu pass needed; enforced by the packaging gate.
+          (cd runtime-host && npm install "npm@${RUNTIME_NPM_VERSION}" --prefix tools/npm --no-audit --no-fund --loglevel=error)
 
           # Gate: the offline runtime must actually boot `dsh web` and print its
           # readiness line before we ship it. Catches node-version / dependency
