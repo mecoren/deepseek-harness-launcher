@@ -75,11 +75,11 @@ src-tauri/target/x86_64-pc-windows-msvc/release/bundle/
 
 含 **NSIS 安装包（`.exe`）**、便携版（`.exe` / `.zip`）等。
 
-> ⚠️ **已移除 MSI（WiX）目标**：`runtime-host` 体积较大（Node ≈ 87 MB + 庞大的
-> `node_modules`），WiX 生成的 MSI 在**构建与安装阶段都明显更慢、更易卡顿**。
-> Windows 上现默认出 **NSIS** 安装包，速度快、体积小、体验更顺。
-> 若确实需要 MSI（如企业推送），再手动把 `"msi"` 加回 `tauri.conf.json` 的
-> `bundle.targets` 即可，但请知悉它会明显拖慢安装。
+> ℹ️ **关于 MSI（WiX）目标**：`runtime-host` 体积较大（Node ≈ 87 MB + 庞大的
+> `node_modules`），WiX 生成的 MSI 在**构建与安装阶段都明显更慢、更易卡顿**，
+> 本地 `npm run build` 默认不构建它。CI 发布流程（`.github/workflows/release.yml`
+> 的 Windows matrix 项）仍会产出 MSI 供企业推送等场景使用；若不需要，可从
+> release.yml 的 `bundles: nsis,msi` 中删掉 `"msi"` 以加速发布。
 
 > 构建速度：release 配置已从「full LTO + 单 codegen 单元（`opt-level="s"`）」
 > 改为「`lto="thin"` + `codegen-units=256` + `opt-level=3`」，`cargo build`
@@ -115,7 +115,7 @@ runtime-host/
 │   └── lib/bin.js
 ├── tools/npm/                            # 独立安装的 npm CLI（更新器，不在 dsh 依赖图内）
 │   └── node_modules/npm/bin/npm-cli.js   # 更新 dsh 用，不依赖用户机器上的 npm
-└── package.json                          # 已声明 @deepseek-ai/dsh 依赖
+└── package.json                          # 最小清单（脚本生成；更新器运行时改写）
 ```
 
 ### 如需重新生成 / 刷新离线包
@@ -132,11 +132,16 @@ runtime-host/
 
 ```powershell
 cd runtime-host
-# 复制一份 Windows Node 可执行文件进来
+# 1) 先生成最小 package.json（该文件不入库；缺失时 npm 会向上层目录
+#    查找最近的 package.json，把依赖错装到仓库根！）
+@'
+{ "name": "deepseek-harness-runtime-host", "version": "0.0.0", "private": true }
+'@ | Set-Content package.json
+# 2) 复制一份 Windows Node 可执行文件进来
 copy <node-install>\node.exe node.exe
-# 安装官方 CLI（仅首次，需要联网；npm 布局天然扁平、无符号链接）
+# 3) 安装官方 CLI（仅首次，需要联网；npm 布局天然扁平、无符号链接）
 npm install --no-audit --no-fund
-# 安装独立 npm CLI 作为更新器（tools/npm，不在 dsh 依赖图内）
+# 4) 安装独立 npm CLI 作为更新器（tools/npm，不在 dsh 依赖图内）
 npm install npm@11.17.0 --prefix tools/npm --no-audit --no-fund
 ```
 
@@ -191,20 +196,24 @@ npm CLI 执行：`node.exe tools/npm/node_modules/npm/bin/npm-cli.js`。
 
 ```
 deepseek-harness-launcher/
-├── package.json                 # npm 脚本：dev / build / build:bin
+├── package.json                 # npm 脚本：dev / build / build:bin / test
 ├── dist/index.html              # 加载页（中文文案）
-├── icons/                       # 黑鲸图标（顶层，用于文档/说明）
-├── runtime-host/                # 离线 dsh CLI 包（见上）
+├── runtime-host/                # 离线 dsh CLI 包（见上；元数据不入库，脚本自动生成）
+├── tools/                       # 构建/打包/校验辅助脚本（含 Node 单测 *.test.cjs）
 └── src-tauri/
     ├── Cargo.toml               # tauri features = ["tray-icon","image-png","image-ico"]
     ├── Cargo.lock
-    ├── tauri.conf.json          # 窗口/图标/资源打包配置
+    ├── tauri.conf.json          # 窗口/图标/资源/CSP 打包配置
     ├── build.rs
     ├── capabilities/default.json
-    ├── icons/                  # Tauri 实际使用的图标（32/128/ico/png）
+    ├── icons/                   # Tauri 实际使用的图标（32/128/ico/png/tray-*.png）
+    ├── js/                      # 注入 JS 源文件（titlebar / loading-*，编译期 include_str! 内联）
     └── src/
-        ├── main.rs             # 入口：托盘 + 关闭隐藏 + 退出杀进程
-        └── dsh.rs             # 启动 dsh web、解析就绪行、按 PID 强杀
+        ├── main.rs             # 入口：托盘 + 关闭隐藏 + 退出停服
+        ├── dsh.rs              # 启动 dsh web、解析就绪行、进程树管理、npm 更新器
+        ├── state.rs            # 应用状态 + 服务启停/重启编排 + 标题栏注入循环
+        ├── commands.rs         # Tauri IPC 命令（窗口控制/检查更新/升级/关于）
+        └── js.rs               # 编译期内联注入 JS
 ```
 
 ---
@@ -225,8 +234,8 @@ Tauri 的资源文件是 MSVC COFF 格式，GNU `ld` 无法链接。
 现象：打开应用后一直停在「正在启动 DeepSeek Harness…」转圈页。
 
 根因（按概率）：
-1. **离线运行包没打进安装包**——仓库里的 `runtime-host/` 仅含 `package.json` /
-   `package-lock.json`（`node.exe`、`node_modules` 被 `.gitignore` 忽略）。
+1. **离线运行包没打进安装包**——`runtime-host/` 的全部内容（含 `package.json`
+   等元数据）都不入库，克隆后需要本地重建。
    如果打包前没有按第 5 节重新生成离线包，安装包里就**没有** `node.exe` +
    `@deepseek-ai/dsh`，应用会回退到 `npx`。而 `npx` 需要**终端用户机器上有
    Node 并能联网**——没有则会永久卡住、且不弹任何提示。

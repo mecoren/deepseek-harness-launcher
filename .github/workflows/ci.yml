@@ -16,15 +16,31 @@ env:
 
 jobs:
   lint:
-    name: Fmt & clippy
+    name: Fmt & clippy & tests
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
+
+      # Needed to LINK the test binary (tauri -> webkit2gtk); clippy/fmt alone
+      # would not require these.
+      - name: Install Linux system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev \
+            patchelf libssl-dev
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: package-lock.json
 
       - name: Rust cache
         uses: swatinem/rust-cache@v2
@@ -35,15 +51,19 @@ jobs:
         working-directory: src-tauri
         run: cargo fmt --check
 
-      # Advisory for now (continue-on-error): flip to a hard gate by removing
-      # `continue-on-error` and appending `-- -D warnings` once the crate is
-      # clippy-clean. Runs on the Linux target (covers the shared/non-Windows
-      # code paths); the Windows code paths are compile-checked by the build
-      # matrix below.
+      # Hard gate: the crate is clippy-clean; keep it that way.
+      # Runs on the Linux target (covers the shared/non-Windows code paths);
+      # the Windows code paths are compile-checked by the build matrix below.
       - name: Cargo clippy
-        continue-on-error: true
         working-directory: src-tauri
-        run: cargo clippy --release --target x86_64-unknown-linux-gnu --all-targets
+        run: cargo clippy --release --all-targets -- -D warnings
+
+      - name: Cargo test
+        working-directory: src-tauri
+        run: cargo test --release
+
+      - name: Node tooling tests (rename/sync helpers)
+        run: npm ci && npm test
 
   build:
     name: Build ${{ matrix.platform }} (${{ matrix.target }})

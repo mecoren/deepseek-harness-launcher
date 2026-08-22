@@ -18,6 +18,9 @@
 // variant-explicit name matching the GitHub Release asset style. `productName`
 // is preserved verbatim (including spaces) — the human-readable app name
 // "DeepSeek Harness Launcher" is what users expect to see in the asset filename.
+//
+// Pure helpers (canonicalName/getOsArch/getVariant/tripleFromDir) are exported
+// so tools/rename-bundle.test.cjs can pin the release-asset naming contract.
 'use strict';
 
 const fs = require('fs');
@@ -28,17 +31,7 @@ const root = path.resolve(__dirname, '..');
 const srcTauri = path.join(root, 'src-tauri');
 const targetDir = path.join(srcTauri, 'target');
 
-// ---- read version + productName dynamically from tauri.conf.json ----
-const conf = JSON.parse(fs.readFileSync(path.join(srcTauri, 'tauri.conf.json'), 'utf8'));
-const version = String(conf.version);
-const productName = String(conf.productName);
-// Keep the human-readable app name (with its own spacing) as the filename
-// prefix, e.g. "DeepSeek Harness Launcher-0.1.0-Windows-Amd64.msi". This is the
-// exact format users see on the GitHub Release page.
-const name = productName;
-
-const isWindows = process.platform === 'win32';
-const tmpBase = process.env.RUNNER_TEMP || path.join(targetDir, '_tmp');
+const artifactExts = ['.exe', '.msi', '.deb', '.rpm', '.dmg', '.appimage'];
 
 function canonicalName(base, ver, os, arch, variant, ext) {
   const core = `${base}-${ver}-${os}-${arch}`;
@@ -70,7 +63,11 @@ function getOsArch(fileName, tripleHint) {
     os = map[ext] || 'Unknown';
   }
 
-  if (!arch) arch = 'Amd64';
+  if (!arch) {
+    // Loud fallback: an unnamed arch silently mislabels release assets.
+    console.warn(`[rename-bundle] WARN: no arch detected for "${fileName}" — defaulting to Amd64`);
+    arch = 'Amd64';
+  }
   if (!os) os = 'Unknown';
   return [os, arch];
 }
@@ -106,123 +103,6 @@ function tripleFromDir(dir) {
   return '';
 }
 
-const artifactExts = ['.exe', '.msi', '.deb', '.rpm', '.dmg', '.appimage'];
-
-// ---- locate every bundle directory (cross-compile aware) ----
-const bundleDirs = [];
-if (fs.existsSync(targetDir)) {
-  const native = path.join(targetDir, 'release', 'bundle');
-  if (fs.existsSync(native)) bundleDirs.push(native);
-  for (const sub of fs.readdirSync(targetDir, { withFileTypes: true })) {
-    if (!sub.isDirectory()) continue;
-    const b = path.join(targetDir, sub.name, 'release', 'bundle');
-    if (fs.existsSync(b)) bundleDirs.push(b);
-  }
-}
-
-let found = 0;
-
-if (bundleDirs.length === 0) {
-  console.log(`no bundle directories found under ${targetDir} (did the build run?)`);
-} else {
-  const seen = new Set();
-  for (const bundleDir of [...new Set(bundleDirs)]) {
-    console.log(`scanning ${bundleDir}`);
-    const files = [];
-    const dirs = [];
-    walk(bundleDir, files, dirs);
-
-    for (const f of files) {
-      const ext = path.extname(f).toLowerCase();
-      if (!artifactExts.includes(ext)) continue;
-      const triple = tripleFromDir(path.dirname(f));
-      const [os, arch] = getOsArch(path.basename(f), triple);
-      const variant = getVariant(path.basename(f), ext.slice(1));
-      const newName = canonicalName(name, version, os, arch, variant, ext.slice(1));
-      const dest = path.join(path.dirname(f), newName);
-      if (path.basename(f) !== newName) {
-        if (fs.existsSync(dest)) fs.unlinkSync(dest);
-        fs.renameSync(f, dest);
-        console.log(`renamed -> ${newName}`);
-      } else {
-        console.log(`skip (already named) ${newName}`);
-      }
-      found++;
-    }
-
-    // ---- package macOS .app bundles as .app.zip ----
-    for (const d of dirs) {
-      if (path.extname(d).toLowerCase() !== '.app') continue;
-      const triple = tripleFromDir(path.dirname(d));
-      const [os, arch] = getOsArch(path.basename(d), triple);
-      const newName = canonicalName(name, version, os, arch, null, 'app.zip');
-      const zipPath = path.join(path.dirname(d), newName);
-      if (!fs.existsSync(zipPath)) {
-        // Use `tar` (available on all runners incl. Windows via tar.exe) to zip
-        // the .app directory, mirroring the GitHub Release asset style.
-        if (isWindows) {
-          execFileSync('tar', ['-a', '-cf', zipPath, '-C', path.dirname(d), path.basename(d)], { stdio: 'inherit' });
-        } else {
-          execFileSync('zip', ['-r', '-q', zipPath, path.basename(d)], { cwd: path.dirname(d), stdio: 'inherit' });
-        }
-        console.log(`zipped -> ${newName}`);
-      } else {
-        console.log(`skip (already exists) ${newName}`);
-      }
-      found++;
-    }
-  }
-}
-
-// ---- create Linux portable tar.gz archives (binary + runtime-host) ----
-const linuxTriples = ['x86_64-unknown-linux-gnu', 'aarch64-unknown-linux-gnu'];
-const binaryName = 'deepseek_harness_launcher';
-const runtimeHost = path.join(root, 'runtime-host');
-
-for (const triple of linuxTriples) {
-  const releaseDir = path.join(targetDir, triple, 'release');
-  const binary = path.join(releaseDir, binaryName);
-  if (!fs.existsSync(binary)) continue;
-
-  const arch = /aarch64/.test(triple) ? 'Arm64' : 'Amd64';
-  const outDir = path.join(targetDir, triple, 'release', 'bundle');
-  if (!fs.existsSync(outDir)) fs.mkdirSync(outDir, { recursive: true });
-
-  const mkTmp = (suffix) => {
-    const p = path.join(tmpBase, `linux-portable-${triple}-${suffix}`);
-    if (fs.existsSync(p)) fs.rmSync(p, { recursive: true, force: true });
-    fs.mkdirSync(p, { recursive: true });
-    return p;
-  };
-
-  // Plain archive: just the binary.
-  const plainDir = mkTmp('plain');
-  fs.copyFileSync(binary, path.join(plainDir, binaryName));
-  if (!isWindows) fs.chmodSync(path.join(plainDir, binaryName), 0o755);
-  const plainName = canonicalName(name, version, 'Linux', arch, null, 'tar.gz');
-  const plainTar = path.join(outDir, plainName);
-  if (fs.existsSync(plainTar)) fs.unlinkSync(plainTar);
-  execFileSync('tar', ['-czf', plainTar, '-C', plainDir, '.'], { stdio: 'inherit' });
-  console.log(`created -> ${plainName}`);
-  found++;
-  fs.rmSync(plainDir, { recursive: true, force: true });
-
-  // WebKit41 archive: binary + offline runtime-host.
-  const wkDir = mkTmp('webkit41');
-  fs.copyFileSync(binary, path.join(wkDir, binaryName));
-  if (!isWindows) fs.chmodSync(path.join(wkDir, binaryName), 0o755);
-  if (fs.existsSync(runtimeHost)) {
-    copyDir(runtimeHost, path.join(wkDir, 'runtime-host'));
-  }
-  const wkName = canonicalName(name, version, 'Linux', arch, 'WebKit41', 'tar.gz');
-  const wkTar = path.join(outDir, wkName);
-  if (fs.existsSync(wkTar)) fs.unlinkSync(wkTar);
-  execFileSync('tar', ['-czf', wkTar, '-C', wkDir, '.'], { stdio: 'inherit' });
-  console.log(`created -> ${wkName}`);
-  found++;
-  fs.rmSync(wkDir, { recursive: true, force: true });
-}
-
 function copyDir(src, dest) {
   fs.mkdirSync(dest, { recursive: true });
   for (const e of fs.readdirSync(src, { withFileTypes: true })) {
@@ -233,4 +113,135 @@ function copyDir(src, dest) {
   }
 }
 
-console.log(`renamed/created ${found} artifact(s)`);
+function main() {
+  const conf = JSON.parse(fs.readFileSync(path.join(srcTauri, 'tauri.conf.json'), 'utf8'));
+  const version = String(conf.version);
+  // Keep the human-readable app name (with its own spacing) as the filename
+  // prefix, e.g. "DeepSeek Harness Launcher-0.1.0-Windows-Amd64.msi". This is
+  // the exact format users see on the GitHub Release page.
+  const name = String(conf.productName);
+  const isWindows = process.platform === 'win32';
+  const tmpBase = process.env.RUNNER_TEMP || path.join(targetDir, '_tmp');
+
+  // ---- locate every bundle directory (cross-compile aware) ----
+  const bundleDirs = [];
+  if (fs.existsSync(targetDir)) {
+    const native = path.join(targetDir, 'release', 'bundle');
+    if (fs.existsSync(native)) bundleDirs.push(native);
+    for (const sub of fs.readdirSync(targetDir, { withFileTypes: true })) {
+      if (!sub.isDirectory()) continue;
+      const b = path.join(targetDir, sub.name, 'release', 'bundle');
+      if (fs.existsSync(b)) bundleDirs.push(b);
+    }
+  }
+
+  let found = 0;
+
+  if (bundleDirs.length === 0) {
+    console.log(`no bundle directories found under ${targetDir} (did the build run?)`);
+  } else {
+    for (const bundleDir of [...new Set(bundleDirs)]) {
+      console.log(`scanning ${bundleDir}`);
+      const files = [];
+      const dirs = [];
+      walk(bundleDir, files, dirs);
+
+      for (const f of files) {
+        const ext = path.extname(f).toLowerCase();
+        if (!artifactExts.includes(ext)) continue;
+        const triple = tripleFromDir(path.dirname(f));
+        const [os, arch] = getOsArch(path.basename(f), triple);
+        const variant = getVariant(path.basename(f), ext.slice(1));
+        const newName = canonicalName(name, version, os, arch, variant, ext.slice(1));
+        const dest = path.join(path.dirname(f), newName);
+        if (path.basename(f) !== newName) {
+          if (fs.existsSync(dest)) fs.unlinkSync(dest);
+          fs.renameSync(f, dest);
+          console.log(`renamed -> ${newName}`);
+        } else {
+          console.log(`skip (already named) ${newName}`);
+        }
+        found++;
+      }
+
+      // ---- package macOS .app bundles as .app.zip ----
+      for (const d of dirs) {
+        if (path.extname(d).toLowerCase() !== '.app') continue;
+        const triple = tripleFromDir(path.dirname(d));
+        const [os, arch] = getOsArch(path.basename(d), triple);
+        const newName = canonicalName(name, version, os, arch, null, 'app.zip');
+        const zipPath = path.join(path.dirname(d), newName);
+        if (!fs.existsSync(zipPath)) {
+          // Use `tar` (available on all runners incl. Windows via tar.exe) to zip
+          // the .app directory, mirroring the GitHub Release asset style.
+          if (isWindows) {
+            execFileSync('tar', ['-a', '-cf', zipPath, '-C', path.dirname(d), path.basename(d)], { stdio: 'inherit' });
+          } else {
+            execFileSync('zip', ['-r', '-q', zipPath, path.basename(d)], { cwd: path.dirname(d), stdio: 'inherit' });
+          }
+          console.log(`zipped -> ${newName}`);
+        } else {
+          console.log(`skip (already exists) ${newName}`);
+        }
+        found++;
+      }
+    }
+  }
+
+  // ---- create Linux portable tar.gz archives (binary + runtime-host) ----
+  const linuxTriples = ['x86_64-unknown-linux-gnu', 'aarch64-unknown-linux-gnu'];
+  const binaryName = 'deepseek_harness_launcher';
+  const runtimeHost = path.join(root, 'runtime-host');
+
+  for (const triple of linuxTriples) {
+    const releaseDir = path.join(targetDir, triple, 'release');
+    const binary = path.join(releaseDir, binaryName);
+    if (!fs.existsSync(binary)) continue;
+
+    const arch = /aarch64/.test(triple) ? 'Arm64' : 'Amd64';
+    const outDir = path.join(targetDir, triple, 'release', 'bundle');
+    if (!fs.existsSync(outDir)) fs.mkdirSync(outDir, { recursive: true });
+
+    const mkTmp = (suffix) => {
+      const p = path.join(tmpBase, `linux-portable-${triple}-${suffix}`);
+      if (fs.existsSync(p)) fs.rmSync(p, { recursive: true, force: true });
+      fs.mkdirSync(p, { recursive: true });
+      return p;
+    };
+
+    // Plain archive: just the binary.
+    const plainDir = mkTmp('plain');
+    fs.copyFileSync(binary, path.join(plainDir, binaryName));
+    if (!isWindows) fs.chmodSync(path.join(plainDir, binaryName), 0o755);
+    const plainName = canonicalName(name, version, 'Linux', arch, null, 'tar.gz');
+    const plainTar = path.join(outDir, plainName);
+    if (fs.existsSync(plainTar)) fs.unlinkSync(plainTar);
+    execFileSync('tar', ['-czf', plainTar, '-C', plainDir, '.'], { stdio: 'inherit' });
+    console.log(`created -> ${plainName}`);
+    found++;
+    fs.rmSync(plainDir, { recursive: true, force: true });
+
+    // WebKit41 archive: binary + offline runtime-host.
+    const wkDir = mkTmp('webkit41');
+    fs.copyFileSync(binary, path.join(wkDir, binaryName));
+    if (!isWindows) fs.chmodSync(path.join(wkDir, binaryName), 0o755);
+    if (fs.existsSync(runtimeHost)) {
+      copyDir(runtimeHost, path.join(wkDir, 'runtime-host'));
+    }
+    const wkName = canonicalName(name, version, 'Linux', arch, 'WebKit41', 'tar.gz');
+    const wkTar = path.join(outDir, wkName);
+    if (fs.existsSync(wkTar)) fs.unlinkSync(wkTar);
+    execFileSync('tar', ['-czf', wkTar, '-C', wkDir, '.'], { stdio: 'inherit' });
+    console.log(`created -> ${wkName}`);
+    found++;
+    fs.rmSync(wkDir, { recursive: true, force: true });
+  }
+
+  console.log(`renamed/created ${found} artifact(s)`);
+}
+
+if (require.main === module) {
+  main();
+}
+
+module.exports = { canonicalName, getOsArch, getVariant, tripleFromDir };

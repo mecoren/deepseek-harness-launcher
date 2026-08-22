@@ -16,10 +16,10 @@
     "core:window:allow-is-maximized",
     "core:window:allow-start-dragging",
     "allow-window-action",
-      "allow-check-dsh-update",
-      "allow-update-dsh",
-      "allow-restart-dsh",
-      "allow-get-about-info",
-      "allow-get-whale-icon-url"
+    "allow-check-dsh-update",
+    "allow-update-dsh",
+    "allow-restart-dsh",
+    "allow-get-about-info",
+    "allow-get-whale-icon-url"
   ]
 }

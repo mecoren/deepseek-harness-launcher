@@ -8,7 +8,8 @@
     "prebuild": "node tools/sync-version.cjs",
     "build": "tauri build",
     "postbuild": "node tools/rename-bundle.cjs",
-    "build:bin": "tauri build --no-bundle"
+    "build:bin": "tauri build --no-bundle",
+    "test": "node --test tools/*.test.cjs"
   },
   "devDependencies": {
     "@tauri-apps/cli": "2.11.4"

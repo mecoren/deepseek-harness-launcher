@@ -1,4 +1,4 @@
-# tools/prepare-runtime-host.ps1
+﻿# tools/prepare-runtime-host.ps1
 #
 # 一键重建 runtime-host 离线包（真实 node.exe + 扁平 node_modules + 独立 npm CLI）。
 #
@@ -37,9 +37,16 @@ $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $runtimeHost = Join-Path $repoRoot 'runtime-host'
 
+# runtime-host/package.json 不再入库（应用内更新器的 npm install 会在运行期
+# 改写它，跟踪它会让工作树永远处于脏状态）。缺失时生成最小清单。
 if (-not (Test-Path (Join-Path $runtimeHost 'package.json'))) {
-    Write-Host "未找到 runtime-host/package.json，请确认在仓库根目录下执行本脚本。" -ForegroundColor Red
-    exit 1
+    Write-Host "==> 生成 runtime-host/package.json（最小清单）" -ForegroundColor Cyan
+    $minimal = [ordered]@{
+        name    = 'deepseek-harness-runtime-host'
+        version = '0.0.0'
+        private = $true
+    } | ConvertTo-Json
+    [System.IO.File]::WriteAllText((Join-Path $runtimeHost 'package.json'), "$minimal`n")
 }
 
 # 真实 node.exe 需 ≥ 20MB（nvmd/nvm 的 bin shim 只有几 MB）。
@@ -90,7 +97,10 @@ foreach ($p in @('node_modules', 'tools', 'node.exe')) {
             }
             Write-Host "    已删除 $p"
         } catch {
-            Write-Host "    [WARN] 删除 $p 失败：$($_.Exception.Message)" -ForegroundColor Yellow
+            # 半删除的目录上继续 npm install 会产出不可预测的布局，直接中止。
+            Write-Host "    [ERROR] 删除 $p 失败：$($_.Exception.Message)" -ForegroundColor Red
+            Write-Host "    请手动关闭占用该目录的进程后重新执行本脚本。" -ForegroundColor Red
+            exit 1
         }
     }
 }

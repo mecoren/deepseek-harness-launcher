@@ -62,6 +62,11 @@ env:
   # 与 tools/prepare-runtime-host.ps1 的 $NpmVersion 默认值保持一致；
   # 缺失时 beforeBuildCommand 门禁（tools/verify-runtime-host.mjs）会中止打包。
   RUNTIME_NPM_VERSION: "11.17.0"
+  # 打进离线包的 Node 版本（单一事实来源；各平台 pack 步骤引用此变量）。
+  # Must be >= v22.16.0: @deepseek-ai/dsh imports node:zlib's zstd API.
+  BUNDLED_NODE_VERSION: "v22.22.2"
+  # Release must resolve dependencies exactly like CI does (no free float).
+  CARGO_NET_LOCKED: "true"
 
 jobs:
   build:
@@ -154,12 +159,13 @@ jobs:
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: package.json
+          cache-dependency-path: package-lock.json
 
-      # Installs the frontend (Tauri app) deps; `tauri-action` runs the
-      # configured `beforeBuildCommand` (npm run build) to produce the web UI.
+      # `npm ci` (not install): deterministic, lockfile-verified installs — a
+      # drifted package-lock.json now fails loudly instead of silently
+      # resolving newer transitive deps on release day.
       - name: Install frontend deps
-        run: npm install
+        run: npm ci
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
@@ -187,12 +193,22 @@ jobs:
           # `node:zlib`'s zstd API (createZstdDecompress etc.), which only
           # exists from v22.16.0 on. v22.13.0 boots, then dies with a
           # SyntaxError, leaving the app stuck on the loading screen.
-          $nodeVer = "v22.22.2"
+          $nodeVer = $env:BUNDLED_NODE_VERSION
           $nodeUrl = "https://nodejs.org/dist/$nodeVer/node-$nodeVer-${{ matrix.node-dist }}.zip"
           Invoke-WebRequest -Uri $nodeUrl -OutFile "$env:RUNNER_TEMP/node.zip"
           Expand-Archive -Path "$env:RUNNER_TEMP/node.zip" -DestinationPath "$env:RUNNER_TEMP/node_tmp"
           Copy-Item -Path "$env:RUNNER_TEMP/node_tmp/node-$nodeVer-${{ matrix.node-dist }}/node.exe" `
             -Destination "runtime-host/${{ matrix.node-bin }}" -Force
+          # runtime-host/package.json is intentionally NOT tracked in git (the
+          # in-app updater rewrites it at runtime); regenerate the minimal
+          # manifest npm needs before installing.
+          Set-Content -Path runtime-host/package.json -Encoding utf8 -Value @'
+{
+  "name": "deepseek-harness-runtime-host",
+  "version": "0.0.0",
+  "private": true
+}
+'@
           Push-Location runtime-host
           # Two-pass install (see matrix note for why):
           # 1) Plain install for the RUNNER's arch first. koffi's install
@@ -219,13 +235,23 @@ jobs:
         run: |
           set -euo pipefail
           # Must be >= v22.16.0 for node:zlib's zstd API (see Windows step).
-          NODE_VER=v22.22.2
+          NODE_VER="${BUNDLED_NODE_VERSION}"
           DIST="node-${NODE_VER}-${{ matrix.node-dist }}"
           curl -fsSL "https://nodejs.org/dist/${NODE_VER}/${DIST}.tar.xz" -o "$RUNNER_TEMP/node.tar.xz"
           mkdir -p "$RUNNER_TEMP/node_tmp"
           tar -xJf "$RUNNER_TEMP/node.tar.xz" -C "$RUNNER_TEMP/node_tmp"
           cp "$RUNNER_TEMP/node_tmp/${DIST}/bin/node" "runtime-host/${{ matrix.node-bin }}"
           chmod +x "runtime-host/${{ matrix.node-bin }}"
+          # runtime-host/package.json is intentionally NOT tracked in git (the
+          # in-app updater rewrites it at runtime); regenerate the minimal
+          # manifest npm needs before installing.
+          cat > runtime-host/package.json <<'EOF'
+{
+  "name": "deepseek-harness-runtime-host",
+  "version": "0.0.0",
+  "private": true
+}
+EOF
           # Two-pass install: plain first so koffi's cnoke finds the runner-arch
           # prebuilt binary (no cmake source-build fallback), then re-resolve
           # the native platform packages for the bundled node's arch (leaf-only
@@ -241,13 +267,23 @@ jobs:
         run: |
           set -euo pipefail
           # Must be >= v22.16.0 for node:zlib's zstd API (see Windows step).
-          NODE_VER=v22.22.2
+          NODE_VER="${BUNDLED_NODE_VERSION}"
           DIST="node-${NODE_VER}-${{ matrix.node-dist }}"
           curl -fsSL "https://nodejs.org/dist/${NODE_VER}/${DIST}.tar.gz" -o "$RUNNER_TEMP/node.tar.gz"
           mkdir -p "$RUNNER_TEMP/node_tmp"
           tar -xzf "$RUNNER_TEMP/node.tar.gz" -C "$RUNNER_TEMP/node_tmp"
           cp "$RUNNER_TEMP/node_tmp/${DIST}/bin/node" "runtime-host/${{ matrix.node-bin }}"
           chmod +x "runtime-host/${{ matrix.node-bin }}"
+          # runtime-host/package.json is intentionally NOT tracked in git (the
+          # in-app updater rewrites it at runtime); regenerate the minimal
+          # manifest npm needs before installing.
+          cat > runtime-host/package.json <<'EOF'
+{
+  "name": "deepseek-harness-runtime-host",
+  "version": "0.0.0",
+  "private": true
+}
+EOF
           # Two-pass install: plain first so koffi's cnoke finds the runner-arch
           # prebuilt binary (no cmake source-build fallback), then re-resolve
           # the native platform packages for the bundled node's arch (leaf-only
@@ -258,11 +294,16 @@ jobs:
           # no --os/--cpu pass needed; enforced by the packaging gate.
           (cd runtime-host && npm install "npm@${RUNTIME_NPM_VERSION}" --prefix tools/npm --no-audit --no-fund --loglevel=error)
 
-          # Gate: the offline runtime must actually boot `dsh web` and print its
-          # readiness line before we ship it. Catches node-version / dependency
-          # mismatches that compile and bundle fine but leave the installed app
-          # stuck on the loading screen forever (e.g. a bundled Node too old for
-          # the CLI's node:zlib zstd API).
+      # Gate: the offline runtime must actually boot `dsh web` and print its
+      # readiness line before we ship it. Catches node-version / dependency
+      # mismatches that compile and bundle fine but leave the installed app
+      # stuck on the loading screen forever (e.g. a bundled Node too old for
+      # the CLI's node:zlib zstd API).
+      #
+      # Contract note: this gate mirrors what src-tauri/src/dsh.rs does at
+      # runtime — scan BOTH stdout and stderr for a loopback URL anywhere in a
+      # line (the CLI may print vite-style banners or log to either stream).
+      # Keep this pattern in sync with `parse_readiness_line`.
       - name: Smoke test offline runtime-host
         # The aarch64-pc-windows-msvc job bundles the win-arm64 node.exe, which
         # cannot execute on the x64 windows-2022 runner (x64 Windows has no
@@ -290,12 +331,18 @@ jobs:
           if ($IsWindows) { $startArgs.WindowStyle = "Hidden" }
           $p = Start-Process @startArgs
           $deadline = (Get-Date).AddSeconds(150)
+          # Same contract as parse_readiness_line in dsh.rs: the loopback URL
+          # may appear on EITHER stream and inside any banner format.
+          $pattern = 'http://(127\.0\.0\.1|localhost):\d{1,5}'
           $ok = $false
           while ((Get-Date) -lt $deadline) {
-            if (Test-Path $out) {
-              $text = Get-Content $out -Raw -ErrorAction SilentlyContinue
-              if ($text -match 'dsh web: http://127\.0\.0\.1:\d+') { $ok = $true; break }
+            foreach ($f in @($out, $err)) {
+              if (Test-Path $f) {
+                $text = Get-Content $f -Raw -ErrorAction SilentlyContinue
+                if ($text -match $pattern) { $ok = $true; break }
+              }
             }
+            if ($ok) { break }
             if ($p.HasExited) { break }
             Start-Sleep -Seconds 2
           }
@@ -488,10 +535,22 @@ jobs:
     name: Publish release assets
     needs: build
     # Runs even when some matrix builds failed, so the platforms that DID
-    # succeed still get published (same resilience as the old per-job flow).
+    # succeed still get published (same resilience as the old per-job flow) —
+    # but a partial matrix now announces itself loudly instead of shipping
+    # silently incomplete (the v0.1.18-v0.1.23 class of incident).
     if: always()
     runs-on: ubuntu-22.04
     steps:
+      - name: Announce matrix outcome
+        shell: bash
+        run: |
+          res="${{ needs.build.result }}"
+          if [ "$res" != "success" ]; then
+            echo "::warning::Release build matrix result was '$res' — this release may be missing platform assets. Check the build jobs before announcing."
+          else
+            echo "All platform builds succeeded."
+          fi
+
       - name: Download build artifacts
         uses: actions/download-artifact@v4
         with:

@@ -68,9 +68,10 @@ rustup target add x86_64-pc-windows-msvc
 
 ### 2. 准备离线 CLI 包（首次必须，否则无离线模式）
 
-`node.exe`、`node_modules`、`tools/` 已在 `.gitignore` 中忽略，克隆仓库后需要本地重建：
+`runtime-host/` 全部内容（含 `package.json` 元数据）已在 `.gitignore` 中忽略，
+克隆仓库后需要本地重建：
 
-推荐一键脚本（复制 `node.exe` + `npm install` + 安装独立 npm + 校验）：
+推荐一键脚本（生成 package.json + 复制 `node.exe` + `npm install` + 安装独立 npm + 校验）：
 
 ```powershell
 .\tools\prepare-runtime-host.ps1
@@ -81,9 +82,11 @@ rustup target add x86_64-pc-windows-msvc
 
 ```powershell
 cd runtime-host
-copy <你的 Node 安装目录>\node.exe node.exe          # 复制一份 Windows Node 进来
-npm install @deepseek-ai/dsh --no-audit --no-fund   # 安装官方 CLI
-npm install npm@11.17.0 --prefix tools/npm --no-audit --no-fund   # 独立安装更新器 npm
+# 1) 先生成最小 package.json（缺失时 npm 会向上层目录查找，把依赖错装到仓库根）
+'{ "name": "deepseek-harness-runtime-host", "version": "0.0.0", "private": true }' | Set-Content package.json
+copy <你的 Node 安装目录>\node.exe node.exe          # 2) 复制一份 Windows Node 进来
+npm install @deepseek-ai/dsh --no-audit --no-fund   # 3) 安装官方 CLI
+npm install npm@11.17.0 --prefix tools/npm --no-audit --no-fund   # 4) 独立安装更新器 npm
 # ⚠️ 必须用 npm（扁平布局、无符号链接）；不要用 pnpm，其 symlink 布局打包后会丢失、
 #    且把更新器放进 dsh 依赖图会导致更新时自举损坏
 ```
@@ -119,7 +122,7 @@ src-tauri/target/x86_64-pc-windows-msvc/release/deepseek_harness_launcher.exe
 **打包安装程序**
 
 ```powershell
-npm run build        # = tauri build（targets: "all"）
+npm run build        # = tauri build（按 tauri.conf.json 的 bundle.targets：nsis/msi/deb/rpm/dmg/app）
 ```
 
 产物在 `src-tauri/target/x86_64-pc-windows-msvc/release/bundle/`（含 NSIS 安装包、便携版等）。
