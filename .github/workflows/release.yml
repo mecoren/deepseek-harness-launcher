@@ -203,12 +203,12 @@ jobs:
           # in-app updater rewrites it at runtime); regenerate the minimal
           # manifest npm needs before installing.
           Set-Content -Path runtime-host/package.json -Encoding utf8 -Value @'
-{
-  "name": "deepseek-harness-runtime-host",
-  "version": "0.0.0",
-  "private": true
-}
-'@
+          {
+            "name": "deepseek-harness-runtime-host",
+            "version": "0.0.0",
+            "private": true
+          }
+          '@
           Push-Location runtime-host
           # Two-pass install (see matrix note for why):
           # 1) Plain install for the RUNNER's arch first. koffi's install
@@ -246,12 +246,12 @@ jobs:
           # in-app updater rewrites it at runtime); regenerate the minimal
           # manifest npm needs before installing.
           cat > runtime-host/package.json <<'EOF'
-{
-  "name": "deepseek-harness-runtime-host",
-  "version": "0.0.0",
-  "private": true
-}
-EOF
+          {
+            "name": "deepseek-harness-runtime-host",
+            "version": "0.0.0",
+            "private": true
+          }
+          EOF
           # Two-pass install: plain first so koffi's cnoke finds the runner-arch
           # prebuilt binary (no cmake source-build fallback), then re-resolve
           # the native platform packages for the bundled node's arch (leaf-only
@@ -278,12 +278,12 @@ EOF
           # in-app updater rewrites it at runtime); regenerate the minimal
           # manifest npm needs before installing.
           cat > runtime-host/package.json <<'EOF'
-{
-  "name": "deepseek-harness-runtime-host",
-  "version": "0.0.0",
-  "private": true
-}
-EOF
+          {
+            "name": "deepseek-harness-runtime-host",
+            "version": "0.0.0",
+            "private": true
+          }
+          EOF
           # Two-pass install: plain first so koffi's cnoke finds the runner-arch
           # prebuilt binary (no cmake source-build fallback), then re-resolve
           # the native platform packages for the bundled node's arch (leaf-only
